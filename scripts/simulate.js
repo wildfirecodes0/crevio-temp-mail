@@ -16,7 +16,7 @@ const store = await import('../src/db.js');
 const { createBot } = await import('../src/bot.js');
 const { handleInbound, setInboundHandler } = await import('../src/inbound.js');
 const { pushMail } = await import('../src/poller.js');
-const { publicDomains } = await import('../src/providers/index.js');
+const { publicDomains, provider, markUp } = await import('../src/providers/index.js');
 const assert = (await import('node:assert/strict')).default;
 
 await store.migrate();
@@ -34,6 +34,7 @@ bot.api.config.use(async (prev, method, payload) => {
   for (const row of payload.reply_markup?.inline_keyboard ?? []) {
     for (const b of row) {
       assert.ok(String(b.text).trim(), 'empty button');
+      assert.ok(!/Home/.test(b.text), `inline Home button found: ${b.text}`);
       if (b.callback_data) assert.ok(Buffer.byteLength(b.callback_data) <= 64, `callback too long: ${b.callback_data}`);
     }
   }
@@ -95,6 +96,9 @@ const t0 = Date.now();
 let p = await say('/start');
 const anchor = calls.find((c) => c.payload.reply_markup?.keyboard);
 assert.ok(anchor, 'main menu keyboard sent');
+assert.equal(anchor.payload.text, '⌨️');
+await new Promise((r) => setTimeout(r, 1400));
+assert.ok(calls.some((c) => c.method === 'deleteMessage' && c.payload.message_id === anchor.result?.message_id) || calls.filter((c) => c.method === 'deleteMessage').length, 'menu carrier message is deleted');
 assert.deepEqual(anchor.payload.reply_markup.keyboard.flat().map((k) => k.text), ['🏠 Home', '📥 Inbox', '✨ New Mail', '✉️ Compose', '🗂 Addresses', '🌐 Domains', '👤 Profile', '⚙️ Settings', '❔ Help']);
 assert.ok(p.photo, 'welcome is a photo card');
 step('/start → menu + welcome', p);
@@ -119,7 +123,37 @@ for (const [pid, list] of Object.entries(byProvider)) {
   if (ok) created.push(store.getActiveInbox(store.getUser(user.id)));
 }
 assert.ok(created.length >= 2, 'at least two providers should work');
-assert.ok(find(/Copy address/).copy_text, 'copy address button');
+
+// A provider that is blocked (e.g. it bans datacenter IPs) → automatic fallback to another provider.
+const blocked = async () => {
+  throw Object.assign(new Error('blocked'), { status: 403 });
+};
+{
+  const victim = created[1].provider;
+  const prov = provider(victim);
+  const orig = prov.create;
+  prov.create = blocked;
+  const dom0 = byProvider[victim][1] ?? byProvider[victim][0];
+  p = await say('✨ New Mail');
+  const isDom = (b) => b.text === `@${dom0.domain}`;
+  if (!btns().some(isDom)) p = await tap(/Next/);
+  p = await callback(btns().find(isDom).callback_data);
+  assert.match(p.text, /wasn’t responding/);
+  assert.ok(find(/Copy address/).copy_text, 'copy address button');
+  step(`${victim} blocked → fallback`, p);
+  created.push(store.getActiveInbox(store.getUser(user.id)));
+
+  // Every provider blocked → a clear error that shows the reason.
+  const saved = Object.keys(byProvider).map((id) => [provider(id), provider(id).create]);
+  for (const [pv] of saved) pv.create = blocked;
+  p = await say('✨ New Mail');
+  p = await tap(/Instant/);
+  assert.match(p.text, /Reason: .*HTTP 403/);
+  step('all blocked → reason shown', p);
+  for (const [pv, fn] of saved) pv.create = fn;
+  prov.create = orig;
+  Object.keys(byProvider).forEach(markUp);
+}
 
 for (const ib of created) {
   store.setUser(user.id, { active_inbox: ib.id });

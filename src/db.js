@@ -72,6 +72,11 @@ export async function migrate() {
     ['auth', 'TEXT'],
     ['sent', 'INTEGER NOT NULL DEFAULT 0'],
   ]);
+  // Counters were added after v1: users who created addresses before that start from their live count.
+  await db.execute(
+    `UPDATE users SET generated = (SELECT COUNT(*) FROM inboxes WHERE inboxes.user_id = users.id)
+     WHERE generated = 0 AND EXISTS (SELECT 1 FROM inboxes WHERE inboxes.user_id = users.id)`,
+  );
   // v1 → v2: move mail.tm credentials into the generic auth blob.
   await db.execute(
     `UPDATE inboxes SET auth = json_object('password', password, 'token', token, 'accountId', account_id) WHERE auth IS NULL`,

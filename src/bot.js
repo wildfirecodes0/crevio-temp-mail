@@ -24,7 +24,7 @@ export function analyse(msg) {
 }
 
 // ── main menu (bottom reply keyboard, never changes) ─────────────────────
-const KB_VER = 4;
+const KB_VER = 5;
 const M = {
   home: '🏠 Home',
   inbox: '📥 Inbox',
@@ -47,13 +47,18 @@ const mainKeyboard = {
   input_field_placeholder: 'Crevio Mail Bot',
 };
 
-/** The reply keyboard lives on a small anchor message, re-sent only when the menu layout changes. */
+/**
+ * Install the main-menu keyboard without leaving a message behind: Telegram only accepts a reply keyboard
+ * attached to a message, so we send a tiny one and delete it a moment later. The keyboard stays.
+ * Re-installed on /start, on commands from the ☰ Menu button (in case a client dropped it), and when the layout changes.
+ */
 async function ensureMenu(ctx, force = false) {
   const user = store.getUser(ctx.from.id);
   if (!user || (!force && user.kb_ver === KB_VER)) return;
-  const m = await ctx.api.sendMessage(ctx.chat.id, `✦ <b>${ui.BRAND}</b> · menu is ready below ⌨️`, { ...HTML, reply_markup: mainKeyboard });
-  if (user.anchor_msg) ctx.api.deleteMessage(ctx.chat.id, user.anchor_msg).catch(() => {});
-  store.setUser(user.id, { anchor_msg: m.message_id, kb_ver: KB_VER });
+  if (user.anchor_msg) ctx.api.deleteMessage(ctx.chat.id, user.anchor_msg).catch(() => {}); // anchor from older versions
+  store.setUser(user.id, { anchor_msg: null, kb_ver: KB_VER });
+  const m = await ctx.api.sendMessage(ctx.chat.id, '⌨️', { reply_markup: mainKeyboard, disable_notification: true });
+  setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, m.message_id).catch(() => {}), 1200);
 }
 
 const drafts = new Map(); // userId → { inboxId, step, draft }
@@ -64,8 +69,10 @@ const toast = (ctx, text, alert) => ctx.toast?.(text, alert);
 
 // ── screens ──────────────────────────────────────────────────────────────
 const S = {};
-const homeBtn = act('🏠 Home', (c) => S.home(c));
-const backRow = (back) => [back, homeBtn].filter(Boolean);
+// Home lives in the bottom menu, so screens don't repeat it as an inline button.
+// Rows that would hold only `homeBtn` simply disappear (falsy buttons and empty rows are dropped).
+const homeBtn = null;
+const backRow = (back) => [back].filter(Boolean);
 
 S.problem = (ctx, kind, { extra, back } = {}) => present(ctx, { name: 'problem', text: ui.problem(kind, extra), kb: [backRow(back)] });
 
@@ -369,21 +376,45 @@ S.wipe = (ctx) =>
   });
 
 // ── profile ──────────────────────────────────────────────────────────────
+const avatars = new Map(); // uid → { at, value: { id, src } | null }
+
+/** The user's current Telegram profile photo as a data URI (cached 30 min). Null if hidden or not set. */
+async function avatarOf(ctx) {
+  const uid = ctx.from.id;
+  const hit = avatars.get(uid);
+  if (hit && Date.now() - hit.at < 30 * 60_000) return hit.value;
+  let value = null;
+  try {
+    const r = await ctx.api.getUserProfilePhotos(uid, { limit: 1 });
+    const sizes = r?.photos?.[0];
+    if (sizes?.length) {
+      const pick = sizes.find((s) => s.width >= 160) ?? sizes.at(-1);
+      const file = await ctx.api.getFile(pick.file_id);
+      const res = await fetch(`https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) value = { id: pick.file_unique_id, src: `data:image/jpeg;base64,${Buffer.from(await res.arrayBuffer()).toString('base64')}` };
+    }
+  } catch (e) {
+    console.warn('[avatar]', e.message);
+  }
+  avatars.set(uid, { at: Date.now(), value });
+  return value;
+}
+
 S.profile = async (ctx, opts) => {
   busy(ctx, 'upload_photo');
   const user = userOf(ctx);
   const ib = store.getActiveInbox(user);
   const route = svc.sendRoute(ib);
   const domainCount = (await domainsFor(user.id)).length;
-  const sentToday = await within(store.sentLast24h(user.id), 1500, 0);
-  const stats = { generated: user.generated || 0, live: store.countInboxes(user.id), received: user.received || 0, sent: user.sent || 0, disposed: user.disposed || 0 };
+  const [sentToday, avatar] = await Promise.all([within(store.sentLast24h(user.id), 1500, 0), within(avatarOf(ctx), 6000, null)]);
+  const stats = { generated: Math.max(user.generated || 0, store.countInboxes(user.id)), live: store.countInboxes(user.id), received: user.received || 0, sent: user.sent || 0, disposed: user.disposed || 0 };
   const joined = new Date(Number(user.created_at)).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
   return present(ctx, {
     name: 'profile',
     text: ui.profile(user, { myDomains: store.userDomains(user.id), domainCount, sentToday, sendLimit: ib && route ? sendLimitFor(user, ib) : config.sendLimitShared, isAdmin: isAdmin(user.id), route }),
     photo: {
-      key: `prof:${user.id}:${user.first_name}:${user.username}:${JSON.stringify(stats)}:${domainCount}`,
-      buffer: () => profileCard({ name: user.first_name, username: user.username, id: user.id, joined, stats, domains: domainCount }),
+      key: `prof:${user.id}:${user.first_name}:${user.username}:${JSON.stringify(stats)}:${domainCount}:${avatar?.id ?? ''}`,
+      buffer: () => profileCard({ name: user.first_name, username: user.username, id: user.id, joined, stats, domains: domainCount, avatar }),
     },
     kb: [
       [copy('⧉ Copy my ID', String(user.id))],
@@ -701,8 +732,9 @@ export function createBot() {
     return S.home(ctx, { fresh: true });
   });
   const cmd = (name, fn) =>
-    bot.command(name, (ctx) => {
+    bot.command(name, async (ctx) => {
       ctx.deleteMessage().catch(() => {});
+      await ensureMenu(ctx, true).catch(() => {}); // commands come from the ☰ Menu button: make sure the keyboard is there
       return fn(ctx);
     });
   cmd(['menu', 'home'], async (c) => {

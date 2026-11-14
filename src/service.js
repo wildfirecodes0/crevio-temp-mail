@@ -2,7 +2,7 @@
 import crypto from 'node:crypto';
 import { config } from './config.js';
 import * as store from './db.js';
-import { provider, domainsFor } from './providers/index.js';
+import { provider, publicDomains, providerLabel, markDown, markUp, isUp } from './providers/index.js';
 import { randomLocal } from './names.js';
 
 export class UserFacingError extends Error {}
@@ -79,45 +79,76 @@ export async function downloadAttachment(ib, msgId, att) {
 }
 
 // ── create / destroy ─────────────────────────────────────────────────────
-export async function createInbox(user, opts = {}) {
-  if (store.countInboxes(user.id) >= config.maxInboxes) throw new UserFacingError('limit');
+const reason = (pid, e) => `${providerLabel(pid)}: ${e.status ? `HTTP ${e.status}` : e.message?.replace(/^.*unreachable: /, 'unreachable, ') || 'error'}`;
 
-  let { provider: pid, domain } = opts;
-  const options = await domainsFor(user.id);
-  if (pid && domain) {
-    if (!options.some((d) => d.provider === pid && d.domain === domain)) throw new UserFacingError('nodomain');
-  } else {
-    const pub = options.filter((d) => d.kind === 'public');
-    if (!pub.length) throw new UserFacingError('down');
-    ({ provider: pid, domain } = pub[crypto.randomInt(pub.length)]);
-  }
-
+/** Try one provider/domain. Random names retry on collisions; a custom name fails fast with "taken". */
+async function tryCreate(user, pid, domain, local) {
   const p = provider(pid);
-  const custom = Boolean(opts.local);
-  for (let attempt = 0; attempt < (custom ? 1 : 4); attempt++) {
-    const local = custom ? opts.local : randomLocal();
+  for (let attempt = 0; attempt < (local ? 1 : 3); attempt++) {
     try {
-      const { address, auth } = await p.create(local, domain);
+      const { address, auth } = await p.create(local || randomLocal(), domain);
+      markUp(pid);
       const ttl = Number(user.default_ttl) || 0;
-      const ib = await store.createInbox({
-        userId: user.id,
-        provider: pid,
-        address,
-        auth,
-        expiresAt: ttl ? Date.now() + ttl * 1000 : null,
-      });
+      const ib = await store.createInbox({ userId: user.id, provider: pid, address, auth, expiresAt: ttl ? Date.now() + ttl * 1000 : null });
       lists.set(ib.id, { at: Date.now(), list: [] });
       return ib;
     } catch (e) {
       if (e.taken) {
-        if (custom) throw new UserFacingError('taken');
+        if (local) throw new UserFacingError('taken');
         continue;
       }
-      if (e.status === 429) throw new UserFacingError('slow');
       throw e;
     }
   }
-  throw new UserFacingError('down');
+  throw Object.assign(new Error('every random name was taken'), { status: 409 });
+}
+
+/**
+ * Create an address. With a chosen domain we try that domain first; if its provider is down we fall back
+ * to other providers automatically (same name when a custom name was given), so the user still gets an address.
+ */
+export async function createInbox(user, opts = {}) {
+  if (store.countInboxes(user.id) >= config.maxInboxes) throw new UserFacingError('limit');
+  const { local } = opts;
+
+  const custom = store.usableDomains(user.id).map((d) => ({ provider: 'own', domain: d.domain }));
+  const pub = await publicDomains();
+  const candidates = [];
+  if (opts.provider && opts.domain) {
+    if (![...custom, ...pub].some((d) => d.provider === opts.provider && d.domain === opts.domain)) throw new UserFacingError('nodomain');
+    candidates.push({ provider: opts.provider, domain: opts.domain });
+    if (opts.provider === 'own') return tryCreate(user, 'own', opts.domain, local).catch((e) => fail(e, 'own'));
+  }
+  // Fallbacks: one random domain per other healthy provider, healthy ones first.
+  const byProvider = new Map();
+  for (const d of [...pub].sort(() => Math.random() - 0.5)) if (!byProvider.has(d.provider)) byProvider.set(d.provider, d);
+  const others = [...byProvider.values()].filter((d) => d.provider !== candidates[0]?.provider);
+  candidates.push(...others.filter((d) => isUp(d.provider)), ...others.filter((d) => !isUp(d.provider)));
+  if (!candidates.length) throw new UserFacingError('down');
+
+  const errors = [];
+  for (const c of candidates.slice(0, 4)) {
+    try {
+      const ib = await tryCreate(user, c.provider, c.domain, local);
+      if (errors.length) ib.fallbackFrom = opts.domain || null;
+      return ib;
+    } catch (e) {
+      if (e instanceof UserFacingError) throw e;
+      console.warn(`[create] ${c.provider} @${c.domain}: ${e.message}${e.body ? ` · ${e.body.slice(0, 120)}` : ''}`);
+      if (e.status !== 409) markDown(c.provider);
+      errors.push(reason(c.provider, e));
+    }
+  }
+  const err = new UserFacingError(errors.some((x) => /429/.test(x)) ? 'slow' : 'down');
+  err.code = errors.join(' · ');
+  throw err;
+}
+
+function fail(e, pid) {
+  if (e instanceof UserFacingError) throw e;
+  const err = new UserFacingError('down');
+  err.code = reason(pid, e);
+  throw err;
 }
 
 export async function destroyInbox(ib, { reason = 'deleted' } = {}) {

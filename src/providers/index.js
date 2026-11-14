@@ -22,6 +22,14 @@ export const provider = (id) => {
   return p;
 };
 
+// ── provider health: a provider that just failed is benched for a few minutes ──
+const benched = new Map(); // id → until (ms)
+export function markDown(id, ms = 5 * 60_000) {
+  if (id !== 'own') benched.set(id, Date.now() + ms);
+}
+export const markUp = (id) => benched.delete(id);
+export const isUp = (id) => (benched.get(id) ?? 0) < Date.now();
+
 let catalogue = []; // [{ provider, domain }]
 let refreshedAt = 0;
 let refreshing = null;
@@ -60,7 +68,9 @@ export async function domainsFor(userId) {
     kind: Number(d.owner_id) === Number(userId) ? 'mine' : 'premium',
     canSend: Boolean(d.can_send && d.worker_url),
   }));
-  const pub = (await publicDomains()).map((d) => ({ ...d, kind: 'public', canSend: false }));
+  const all = await publicDomains();
+  const healthy = all.filter((d) => isUp(d.provider));
+  const pub = (healthy.length ? healthy : all).map((d) => ({ ...d, kind: 'public', canSend: false }));
   return [...custom.filter((d) => d.kind === 'mine'), ...custom.filter((d) => d.kind === 'premium'), ...pub];
 }
 

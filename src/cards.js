@@ -131,7 +131,7 @@ export function addressCard({ address, provider, timer, note = 'Created just now
   );
 }
 
-export function profileCard({ name, username, id, joined, stats, domains }) {
+export function profileCard({ name, username, id, joined, stats, domains, avatar }) {
   const display = clean(name, 'Crevio user');
   const initial = [...display][0]?.toUpperCase() || 'C';
   const tile = (label, value, accent) =>
@@ -139,16 +139,21 @@ export function profileCard({ name, username, id, joined, stats, domains }) {
       h('div', { fontFamily: 'Grotesk', fontWeight: 700, fontSize: 52, color: accent }, String(value)),
       h('div', { fontSize: 19, letterSpacing: 2, color: C.muted, fontWeight: 600 }, label),
     );
-  const key = `prof:${id}:${display}:${username}:${JSON.stringify(stats)}:${domains}`;
+  const key = `prof:${id}:${display}:${username}:${JSON.stringify(stats)}:${domains}:${avatar?.id ?? ''}`;
   return cached(key, () =>
     png(
       frame(
         h('div', { justifyContent: 'space-between', alignItems: 'center' }, brand(), chip(`Member since ${joined}`, C.muted)),
         h('div', { marginTop: 44, alignItems: 'center', gap: 28 },
-          h('div', {
-            width: 116, height: 116, borderRadius: 116, alignItems: 'center', justifyContent: 'center',
-            backgroundImage: `linear-gradient(135deg, ${C.violet}, ${C.cyan})`, fontFamily: 'Grotesk, Deva', fontWeight: 700, fontSize: 56, color: '#0b0c14',
-          }, initial),
+          avatar
+            ? // Telegram profile photo, ringed with the brand gradient
+              h('div', { width: 128, height: 128, borderRadius: 128, padding: 5, backgroundImage: `linear-gradient(135deg, ${C.violet}, ${C.cyan})` },
+                { type: 'img', props: { src: avatar.src, width: 118, height: 118, style: { borderRadius: 118, objectFit: 'cover', border: `4px solid ${C.bg}` } } },
+              )
+            : h('div', {
+                width: 116, height: 116, borderRadius: 116, alignItems: 'center', justifyContent: 'center',
+                backgroundImage: `linear-gradient(135deg, ${C.violet}, ${C.cyan})`, fontFamily: 'Grotesk, Deva', fontWeight: 700, fontSize: 56, color: '#0b0c14',
+              }, initial),
           h('div', { flexDirection: 'column', gap: 6 },
             h('div', { fontFamily: 'Grotesk, Deva', fontWeight: 700, fontSize: 52, letterSpacing: -1 }, display.slice(0, 22)),
             h('div', { fontSize: 24, color: C.muted, gap: 18 },

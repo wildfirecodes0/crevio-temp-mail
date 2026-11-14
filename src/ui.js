@@ -68,9 +68,12 @@ export function created(ib) {
     '',
     card(addr(ib.address)),
     `🌐 <i>${sourceLabel(ib)}</i>  ·  ${timerLine(ib)}`,
+    ib.fallbackFrom ? `<i>@${esc(ib.fallbackFrom)} wasn’t responding, so I used another domain.</i>` : null,
     '',
     '<i>Tap the address to copy. I’ll ping you the moment mail arrives.</i>',
-  ].join('\n');
+  ]
+    .filter((l) => l !== null)
+    .join('\n');
 }
 
 export function help() {
@@ -360,8 +363,9 @@ export const composeUnavailable = (isAdmin) =>
 
 // ── errors ───────────────────────────────────────────────────────────────
 export function problem(kind, extra = '') {
+  const why = extra && kind !== 'sendfail' ? `\n\n<i>Reason: ${esc(truncate(extra, 300))}</i>` : '';
   const map = {
-    down: '🛠 <b>Mail servers are busy</b>\nCouldn’t reach them just now. Try again, or pick another domain.',
+    down: '🛠 <b>Couldn’t create the address</b>\nI tried several mail providers and none of them answered. Try again in a minute.',
     slow: '⏳ <b>Easy there</b>\nToo many requests in a row. Give it a few seconds.',
     taken: '🙅 <b>That name is taken</b>\nTry another one. Adding a number or a dash usually works.',
     gone: '🫥 <b>Not found</b>\nThat mail or address no longer exists.',
@@ -380,5 +384,5 @@ export function problem(kind, extra = '') {
     toobig: '📎 <b>Too large</b>\nAttachments are limited to 15 MB in total.',
     limit: `🗂 <b>All ${config.maxInboxes} slots are in use</b>\nDelete an address in 🗂 Addresses to make room.`,
   };
-  return map[kind] || map.down;
+  return (map[kind] || map.down) + why;
 }
