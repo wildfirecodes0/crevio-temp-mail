@@ -18,9 +18,12 @@ const head = (title, meta) => `<b>${title}</b>${meta ? `  ·  <i>${meta}</i>` : 
 const card = (inner) => `<blockquote>${inner}</blockquote>`;
 const addr = (a) => `<code>${esc(a)}</code>`;
 const hint = (t) => `<i>${t}</i>`;
+// Detail rows in the same rhythm as the address list: "emoji Label ~ value", value in bold, airy spacing.
+// (Box-drawing trees don't line up in Telegram's proportional font, so they're not used.)
 const tree = (rows) => {
   const r = rows.filter(Boolean);
-  return r.map(([emoji, label, value], i) => `${i === r.length - 1 ? '└' : '├'} ${emoji} <b>${label}</b>   ${value}`).join('\n');
+  if (!r.length) return '';
+  return `\n${r.map(([emoji, label, value]) => `${emoji} ${label} ~ ${/<\w/.test(String(value)) ? value : `<b>${value}</b>`}`).join('\n\n')}`;
 };
 const join = (parts) => parts.filter((p) => p !== null && p !== undefined && p !== false).join('\n');
 export const H = (sub) => head('✦ 𝗖𝗥𝗘𝗩𝗜𝗢 𝗠𝗔𝗜𝗟', sub);
@@ -34,7 +37,7 @@ export const TIMERS = [
 ];
 export const ttlLabel = (sec) => TIMERS.find(([s]) => s === Number(sec))?.[1] ?? 'Never';
 const leftOf = (ib) => Math.max(0, (Number(ib.expires_at) - Date.now()) / 1000);
-const timerValue = (ib) => (ib.expires_at ? `self-destructs in <b>${shortDur(leftOf(ib))}</b>` : 'none, lives until deleted');
+const timerValue = (ib) => (ib.expires_at ? `<b>self-destructs in ${shortDur(leftOf(ib))}</b>` : '<b>none</b> · <i>lives until deleted</i>');
 export const timerShort = (ib) => (ib.expires_at ? `Expires in ${shortDur(leftOf(ib))}` : 'No timer');
 
 const senderName = (from) => esc(truncate(from?.name || from?.address?.split('@')[0] || 'Unknown', 28));
@@ -68,7 +71,7 @@ export function dashboard(ib, { total, unread, index, count, route }) {
     card(`${addr(ib.address)}\n<i>tap to copy</i>`),
     tree([
       ['📬', 'Mails', mails],
-      ['🌐', 'Domain', `${esc(ib.address.split('@')[1])} · <i>${sourceLabel(ib)}</i>`],
+      ['🌐', 'Domain', `<b>${esc(ib.address.split('@')[1])}</b> · <i>${sourceLabel(ib)}</i>`],
       ['🕓', 'Created', ago(Number(ib.created_at))],
       ['💣', 'Timer', timerValue(ib)],
       ['✉️', 'Sending', sendingValue(route)],
@@ -116,22 +119,23 @@ export function help() {
 }
 
 // ── create ───────────────────────────────────────────────────────────────
-export function picker(domains, { pendingLocal } = {}) {
-  const custom = domains.filter((d) => d.kind !== 'public').length;
-  if (pendingLocal) {
-    return join([head('✍️ Custom address', `${domains.length} domains`), card(`${addr(`${pendingLocal}@`)}<b>…</b>`), hint('Pick a domain below to finish it.')]);
-  }
-  return join([
-    head('✨ New address', `${domains.length} domains`),
-    tree([
-      ['⚡', 'Instant', 'random name on a random domain'],
-      ['✍️', 'Custom', 'choose the part before @'],
-      ['🎲', '@domain', 'random name on that domain'],
-    ]),
-    custom ? '\n⭐ your domain   💎 premium' : null,
+const KIND_MARK = { mine: '⭐', premium: '💎', public: '🎲' };
+const kindLabel = (d) => (d.kind === 'mine' ? 'your domain' : d.kind === 'premium' ? 'premium' : providerLabel(d.provider));
+
+/** Domain picker as a numbered list (one page of PAGE), same rhythm as the address list. */
+export function picker(slice, { total, offset = 0, page = 0, pages = 1, pendingLocal } = {}) {
+  const lines = [
+    pendingLocal ? head('✍️ Custom address', `${total} domains`) : head('✨ New address', `${total} domains`),
     '',
-    hint('Pick a domain below.'),
-  ]);
+  ];
+  if (pendingLocal) lines.push(card(`${addr(`${pendingLocal}@`)}<b>…</b>\n<i>pick a domain to finish it</i>`), '');
+  slice.forEach((d, i) => lines.push(`<b>${offset + i + 1}.</b> ${KIND_MARK[d.kind] ?? '🎲'} <code>@${esc(d.domain)}</code> ~ <b>${kindLabel(d)}</b>`, ''));
+  lines.push(
+    hint(
+      `${pendingLocal ? '' : '⚡ instant = random domain · ✍️ custom = your name · '}tap a number${pages > 1 ? `  ·  page ${page + 1} of ${pages}` : ''}`,
+    ),
+  );
+  return lines.join('\n');
 }
 
 export const askCustom = (domain) =>
@@ -182,9 +186,9 @@ export function message(ib, msg, { body, codes }, { index, total, wasNew } = {})
     '',
     tree([
       ['👤', 'From', senderName(from)],
-      ['📧', 'Email', esc(from.address || '—')],
+      ['📧', 'Email', `<code>${esc(from.address || '—')}</code>`],
       ['📮', 'To', addr(ib.address)],
-      ['🕓', 'Received', `${fmtDate(msg.createdAt)} · ${ago(msg.createdAt)}`],
+      ['🕓', 'Received', `<b>${fmtDate(msg.createdAt)}</b> · <i>${ago(msg.createdAt)}</i>`],
       att.length ? ['📎', 'Files', `${att.length} · ${fmtSize(att.reduce((s, a) => s + (a.size || 0), 0))}`] : null,
     ]),
     codes.length ? `\n${card(`🔑 <b>Code</b>   ${codes.map(addr).join('   ')}\n<i>tap to copy</i>`)}` : null,
@@ -247,8 +251,8 @@ export function addressDetail(ib, { index, count, isActive, counts, route }) {
       ['🌐', 'Domain', esc(ib.address.split('@')[1])],
       ['🛰', 'Provider', sourceLabel(ib)],
       ['📬', 'Mails', mails],
-      ['📥', 'Received', `${ib.received || 0}   📤 <b>Sent</b> ${ib.sent || 0}`],
-      ['🕓', 'Created', `${fmtDate(created)} · ${ago(created)}`],
+      ['📥', 'Received', `<b>${ib.received || 0}</b>   ·   📤 Sent ~ <b>${ib.sent || 0}</b>`],
+      ['🕓', 'Created', `<b>${fmtDate(created)}</b> · <i>${ago(created)}</i>`],
       ['💣', 'Timer', timerValue(ib)],
       ['✉️', 'Sending', sendingValue(route)],
     ]),

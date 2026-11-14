@@ -24,7 +24,7 @@ const sender = { email: 'lunar-otter47@relay.dev', replyTo: ib.address };
 const draft = { to: 'a@b.co', subject: 's', text: 'x'.repeat(5000), attachments: [] };
 const texts = [
   ui.welcome('Sam', 18), ui.help(), ui.dashboard(ib, { total: 3, unread: 1, index: 1, count: 2, route: { mode: 'relay' } }),
-  ui.created(ib), ui.picker([{ provider: 'tm', domain: 'a.com', kind: 'mine' }]), ui.askCustom('x.dev'),
+  ui.created(ib), ui.picker([{ provider: 'tm', domain: 'a.com', kind: 'mine' }], { total: 18, pages: 2 }), ui.picker([{ provider: 'tm', domain: 'a.com', kind: 'public' }], { total: 1, pendingLocal: 'neo' }), ui.askCustom('x.dev'),
   ui.inbox(ib, [], 0, 1), ui.inbox(ib, Array.from({ length: 20 }, (_, i) => ({ ...msg, id: 'm' + i, seen: i % 2 })), 1, 3),
   ui.message(ib, msg, { body: 'x'.repeat(9000), codes: ['482913'], links: extractActionLinks(msg) }),
   ui.attachments(msg, true), ui.notification(ib, msg, { codes: ['482913'], links: [] }).text,

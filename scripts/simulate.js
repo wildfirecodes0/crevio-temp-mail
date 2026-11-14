@@ -131,15 +131,25 @@ console.log(`  domains: ${domains.length} → ${Object.entries(byProvider).map((
 
 p = await tap(/Choose domain/);
 step('Choose domain → inline grid', p);
-assert.ok(btns().filter((b) => b.text.startsWith('@')).length >= 10);
+assert.equal(btns().filter((b) => /^« \d+ »$/.test(b.text)).length, 10, 'ten numbered domain buttons');
+assert.match(p.text, /<b>1\.<\/b> .+<code>@.+<\/code> ~ <b>/);
+
+/** Tap the « n » button for a domain on the picker, paging forward as needed. */
+async function pickDomain(domain) {
+  const escaped = domain.replace(/\./g, '\\.');
+  for (let guard = 0; guard < 5; guard++) {
+    const m = cur.text.match(new RegExp(`<b>(\\d+)\\.</b> [^\\n]*<code>@${escaped}</code>`));
+    if (m) return tap(new RegExp(`^« ${m[1]} »$`));
+    await tap(/Next/);
+  }
+  throw new Error(`domain ${domain} not on picker`);
+}
 
 const created = [];
 for (const [pid, list] of Object.entries(byProvider)) {
   p = await say('✨ New Mail');
-  const re = new RegExp(`^@${list[0].domain.replace(/\./g, '\\.')}$`);
-  if (!btns().some((b) => re.test(b.text))) p = await tap(/Next/);
   const t = Date.now();
-  p = await tap(re);
+  p = await pickDomain(list[0].domain);
   const ok = /live/.test(p?.text || '') && p.photo;
   console.log(`${ok ? '✓' : '✗'} create on ${pid.padEnd(4)} @${list[0].domain.padEnd(22)} ${Date.now() - t}ms${ok ? '  🖼' : ` ${p?.text?.slice(0, 80)}`}`);
   if (ok) created.push(store.getActiveInbox(store.getUser(user.id)));
@@ -157,9 +167,7 @@ const blocked = async () => {
   prov.create = blocked;
   const dom0 = byProvider[victim][1] ?? byProvider[victim][0];
   p = await say('✨ New Mail');
-  const isDom = (b) => b.text === `@${dom0.domain}`;
-  if (!btns().some(isDom)) p = await tap(/Next/);
-  p = await callback(btns().find(isDom).callback_data);
+  p = await pickDomain(dom0.domain);
   assert.match(p.text, /wasn’t responding/);
   assert.ok(find(/Copy address/).copy_text, 'copy address button');
   step(`${victim} blocked → fallback`, p);
@@ -351,7 +359,7 @@ assert.match(p.text, /No mail yet/);
 step('delete mail', p);
 
 p = await say('👤 Profile');
-assert.match(p.text, /Sent today<\/b>\s+<b>2/);
+assert.match(p.text, /Sent today ~ <b>2<\/b>/);
 step('profile after sends', p);
 
 p = await callback('t:zzzz');

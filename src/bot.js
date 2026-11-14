@@ -145,9 +145,6 @@ S.help = (ctx, opts) =>
   }, opts);
 
 // ── create ───────────────────────────────────────────────────────────────
-const badge = { mine: '⭐ ', premium: '💎 ', public: '' };
-const PICK_PAGE = 12;
-
 S.picker = async (ctx, { page = 0, pendingLocal, fresh } = {}) => {
   const user = userOf(ctx);
   if (!pendingLocal && store.countInboxes(user.id) >= config.maxInboxes) {
@@ -156,23 +153,17 @@ S.picker = async (ctx, { page = 0, pendingLocal, fresh } = {}) => {
   busy(ctx);
   const domains = await domainsFor(user.id);
   if (!domains.length) return S.problem(ctx, 'down');
-  const pages = Math.ceil(domains.length / PICK_PAGE);
+  const pages = Math.ceil(domains.length / ui.PAGE);
   page = Math.min(Math.max(0, page), pages - 1);
-  const slice = domains.slice(page * PICK_PAGE, page * PICK_PAGE + PICK_PAGE);
-  const kb = [];
-  if (!pendingLocal) kb.push([act('⚡ Instant', (c) => S.create(c, {})), act('✍️ Custom name', (c) => S.custom(c))]);
-  for (let i = 0; i < slice.length; i += 2) {
-    kb.push(slice.slice(i, i + 2).map((d) => act(`${badge[d.kind]}@${d.domain}`, (c) => S.create(c, { provider: d.provider, domain: d.domain, local: pendingLocal }))));
-  }
-  if (pages > 1) {
-    kb.push([
-      page > 0 ? act('‹ Prev', (c) => S.picker(c, { page: page - 1, pendingLocal })) : null,
-      act(`${page + 1} / ${pages}`, (c) => toast(c, `${domains.length} domains`)),
-      page < pages - 1 ? act('Next ›', (c) => S.picker(c, { page: page + 1, pendingLocal })) : null,
-    ]);
-  }
-  kb.push(pendingLocal ? [act('✖ Cancel', (c) => S.home(c))] : [act('➕ Add my domain', (c) => S.addDomain(c)), homeBtn]);
-  return present(ctx, { name: 'picker', text: ui.picker(domains, { pendingLocal }), kb }, { fresh });
+  const slice = domains.slice(page * ui.PAGE, page * ui.PAGE + ui.PAGE);
+  const kb = [
+    pendingLocal ? null : [act('⚡ Instant', (c) => S.create(c, {})), act('✍️ Custom name', (c) => S.custom(c))],
+    ...numberRows(slice, page * ui.PAGE, (c, d) => S.create(c, { provider: d.provider, domain: d.domain, local: pendingLocal })),
+    pagerRow(page, pages, (c, p) => S.picker(c, { page: p, pendingLocal }), `${domains.length} domains`),
+    pendingLocal ? [act('✖ Cancel', (c) => S.home(c))] : [act('➕ Add my domain', (c) => S.addDomain(c))],
+  ];
+  const text = ui.picker(slice, { total: domains.length, offset: page * ui.PAGE, page, pages, pendingLocal });
+  return present(ctx, { name: 'picker', text, kb }, { fresh });
 };
 
 S.custom = (ctx, preset) => {
