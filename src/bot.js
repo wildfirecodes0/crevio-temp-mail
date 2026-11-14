@@ -12,6 +12,7 @@ import { LOCAL_RE, normalizeLocal } from './names.js';
 import { checkDomain, pingWorker, workerFiles, txtHost } from './domains.js';
 import { sendMail, sendLimitFor, senderFor } from './send.js';
 import { welcomeCard, addressCard, profileCard } from './cards.js';
+import { createKey, apiBase, docsUrl } from './api.js';
 import { present, act, url, webapp, copy, busy, screenOf, clearInput, resolveToken } from './router.js';
 import { within, esc, isEmail, isDomain, truncate } from './utils.js';
 
@@ -24,7 +25,7 @@ export function analyse(msg) {
 }
 
 // ── main menu (bottom reply keyboard, never changes) ─────────────────────
-const KB_VER = 6;
+const KB_VER = 7;
 const M = {
   home: '🏠 Home',
   inbox: '📥 Inbox',
@@ -35,12 +36,13 @@ const M = {
   profile: '👤 Profile',
   settings: '⚙️ Settings',
   help: '❔ Help',
+  api: '🔑 API',
 };
 const mainKeyboard = {
   keyboard: [
     [{ text: M.home }, { text: M.inbox }, { text: M.new }],
     [{ text: M.compose }, { text: M.addresses }, { text: M.domains }],
-    [{ text: M.profile }, { text: M.settings }, { text: M.help }],
+    [{ text: M.api }, { text: M.profile }, { text: M.settings }],
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -407,6 +409,7 @@ S.settings = (ctx, opts) => {
         store.setUser(user.id, { default_ttl: ui.TIMERS[(i + 1) % ui.TIMERS.length][0] });
         return S.settings(c);
       })],
+      [act('❔ Help', (c) => S.help(c)), act('🔑 Developer API', (c) => S.api(c))],
       [act('🧨 Erase all my data', (c) => S.wipe(c))],
       [homeBtn],
     ],
@@ -735,6 +738,80 @@ S.send = async (ctx) => {
   });
 };
 
+// ── developer API ────────────────────────────────────────────────────────
+const docsBtn = () => (docsUrl() ? url('📖 Docs', docsUrl()) : null);
+
+S.api = async (ctx, opts) => {
+  const user = userOf(ctx);
+  const keys = store.userApiKeys(user.id);
+  const active = store.getActiveInbox(user);
+  const sendingOn = store.listInboxes(user.id).some((ib) => svc.sendRoute(ib)) || Boolean(svc.relayDomain());
+  return present(ctx, {
+    name: 'api',
+    text: ui.apiHome(keys, {
+      base: apiBase(),
+      sentToday: await within(store.sentLast24h(user.id), 1500, 0),
+      limit: active ? sendLimitFor(user, active) : config.sendLimitShared,
+      sendingOn,
+    }),
+    kb: [
+      ...numberRows(keys, 0, (c, k) => S.apiKey(c, k.id)),
+      [keys.length < config.apiMaxKeys ? act('➕ New key', (c) => S.newKey(c)) : null, act('🧪 Examples', (c) => S.apiExamples(c))],
+      [docsBtn()],
+    ],
+  }, opts);
+};
+
+S.newKey = (ctx) => {
+  const create = async (c, name) => {
+    let r;
+    try {
+      r = await createKey(c.from.id, name);
+    } catch (e) {
+      return fail(c, e, act('‹ API', (x) => S.api(x)));
+    }
+    return present(c, {
+      name: 'key-created',
+      text: ui.keyCreated(r.key, r.secret),
+      kb: [[copy('⧉ Copy key', r.secret)], [act('🧪 Examples', (x) => S.apiExamples(x)), act('‹ All keys', (x) => S.api(x))], [docsBtn()]],
+    });
+  };
+  return present(ctx, {
+    name: 'new-key',
+    text: ui.askKeyName(),
+    kb: [[act('⏭ Skip', (c) => create(c, 'Default')), act('✖ Cancel', (c) => S.api(c))]],
+    input: (c, text) => create(c, text.trim()),
+  });
+};
+
+S.apiKey = (ctx, id) => {
+  const k = store.getApiKey(id);
+  if (!k || Number(k.user_id) !== ctx.from.id) return S.api(ctx);
+  return present(ctx, {
+    name: 'api-key',
+    text: ui.keyDetail(k),
+    kb: [[act('🗑 Revoke', (c) => S.revokeKey(c, k)), act('‹ All keys', (c) => S.api(c))]],
+  });
+};
+
+S.revokeKey = (ctx, k) =>
+  present(ctx, {
+    name: 'revoke-key',
+    text: ui.confirmRevoke(k),
+    kb: [[act('🗑 Yes, revoke', (c) => {
+      store.revokeApiKey(k.id);
+      toast(c, '🗑 Key revoked');
+      return S.api(c);
+    }), act('✖ Keep it', (c) => S.apiKey(c, k.id))]],
+  });
+
+S.apiExamples = (ctx) =>
+  present(ctx, {
+    name: 'api-examples',
+    text: ui.apiExamples(apiBase()),
+    kb: [[act('‹ API', (c) => S.api(c)), docsBtn()]],
+  });
+
 // ── main-menu taps (and legacy labels from older keyboards) ──────────────
 const MENU = new Map([
   [M.home, (c) => S.home(c, { fresh: true })],
@@ -746,6 +823,7 @@ const MENU = new Map([
   [M.profile, (c) => S.profile(c, { fresh: true })],
   [M.settings, (c) => S.settings(c, { fresh: true })],
   [M.help, (c) => S.help(c, { fresh: true })],
+  [M.api, (c) => S.api(c, { fresh: true })],
 ]);
 const menuAction = (text) => MENU.get(text) ?? (/^📥 Inbox/.test(text) ? MENU.get(M.inbox) : /^(🏠 Menu|🔄 Refresh|💣 Timer)$/.test(text) ? MENU.get(M.home) : null);
 
@@ -804,6 +882,7 @@ export function createBot() {
   cmd('addresses', MENU.get(M.addresses));
   cmd('settings', MENU.get(M.settings));
   cmd('help', MENU.get(M.help));
+  cmd('api', MENU.get(M.api));
 
   // admin
   bot.command('stats', async (ctx) => {
@@ -903,6 +982,7 @@ export const COMMANDS = [
   { command: 'inbox', description: 'Open the inbox' },
   { command: 'compose', description: 'Send a mail' },
   { command: 'domains', description: 'All domains, add your own' },
+  { command: 'api', description: 'Developer API: send mail & OTPs from your app' },
   { command: 'profile', description: 'Your profile & stats' },
   { command: 'addresses', description: 'Switch or delete addresses' },
   { command: 'settings', description: 'Notifications & default timer' },

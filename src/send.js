@@ -41,14 +41,15 @@ export async function sendMail(user, ib, draft) {
   if (limit && (await store.sentLast24h(user.id)) >= limit) throw new UserFacingError('sendlimit');
 
   const sender = senderFor(ib, route);
-  const name = (user.first_name || ib.address.split('@')[0]).slice(0, 60);
+  const name = (draft.fromName || user.first_name || ib.address.split('@')[0]).slice(0, 60);
+  const replyTo = draft.replyTo || sender.replyTo;
   const payload = {
     from: { email: sender.email, name },
     to: draft.to.split(/,\s*/),
     subject: draft.subject || '(no subject)',
-    text: draft.text,
-    html: textToHtml(draft.text),
-    ...(sender.replyTo ? { replyTo: { email: sender.replyTo, name } } : {}),
+    text: draft.text || '',
+    html: draft.html || textToHtml(draft.text || ''),
+    ...(replyTo ? { replyTo: { email: replyTo, name } } : {}),
     ...(draft.inReplyTo ? { headers: { 'In-Reply-To': draft.inReplyTo, References: draft.inReplyTo } } : {}),
     ...(draft.attachments?.length
       ? { attachments: draft.attachments.map((a) => ({ content: a.content, filename: a.filename, type: a.type, disposition: 'attachment' })) }
@@ -77,5 +78,5 @@ export async function sendMail(user, ib, draft) {
   }
   store.logSent(user.id, ib.id, draft.to, payload.subject);
   store.noteSent(user.id);
-  return r;
+  return { id: r?.id ?? null, from: sender.email, replyTo: replyTo || null, to: payload.to };
 }

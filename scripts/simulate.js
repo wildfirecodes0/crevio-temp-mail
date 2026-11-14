@@ -121,7 +121,7 @@ assert.equal(anchor.payload.text, '📬');
 assert.equal(calls.filter((c) => c.payload.reply_markup?.keyboard).length, 1, 'exactly one menu carrier on /start');
 const carrierId = store.getUser(user.id).anchor_msg;
 assert.ok(carrierId, 'carrier id stored');
-assert.deepEqual(anchor.payload.reply_markup.keyboard.flat().map((k) => k.text), ['🏠 Home', '📥 Inbox', '✨ New Mail', '✉️ Compose', '🗂 Addresses', '🌐 Domains', '👤 Profile', '⚙️ Settings', '❔ Help']);
+assert.deepEqual(anchor.payload.reply_markup.keyboard.flat().map((k) => k.text), ['🏠 Home', '📥 Inbox', '✨ New Mail', '✉️ Compose', '🗂 Addresses', '🌐 Domains', '🔑 API', '👤 Profile', '⚙️ Settings']);
 assert.ok(p.photo, 'welcome is a photo card');
 step('/start → menu + welcome', p);
 
@@ -296,6 +296,75 @@ assert.equal(worker.last.from.email, `${local}@mail.crevio-test.dev`);
 assert.equal(worker.last.replyTo.email, created[0].address);
 console.log(`  relay: From ${worker.last.from.email}  Reply-To ${worker.last.replyTo.email}`);
 
+// ── developer API: key from the bot → send + OTP from "the user's server" ─
+{
+  const { handleApi, handleDocs } = await import('../src/api.js');
+  p = await say('🔑 API');
+  assert.match(p.text, /No keys yet/);
+  step('API screen', p);
+  p = await tap(/New key/);
+  p = await say('My site');
+  const secret = find(/Copy key/).copy_text.text;
+  assert.match(secret, /^crv_live_/);
+  step('key created (shown once)', p);
+
+  const api = http.createServer((req, res) => {
+    const { pathname } = new URL(req.url, 'http://x');
+    return pathname === '/docs' ? handleDocs(req, res) : handleApi(req, res, pathname);
+  }).listen(0);
+  const base = `http://127.0.0.1:${api.address().port}`;
+  const call = async (method, path, body, key = secret) => {
+    const r = await fetch(base + path, {
+      method,
+      headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: r.status, body: await r.json() };
+  };
+
+  assert.equal((await call('GET', '/api/v1/me', null, null)).status, 401);
+  assert.equal((await call('GET', '/api/v1/me', null, 'crv_live_wrong')).status, 401);
+  const meR = await call('GET', '/api/v1/me');
+  assert.equal(meR.status, 200);
+  assert.ok(meR.body.sending.enabled);
+  console.log(`✓ API /me                       ${meR.body.addresses.length} addresses · sending ${meR.body.sending.enabled ? 'on' : 'off'}`);
+
+  const bad = await call('POST', '/api/v1/send', { to: 'nope', subject: 'x', text: 'y' });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.error.code, 'invalid_to');
+  const sendR = await call('POST', '/api/v1/send', { to: 'customer@example.com', subject: 'Welcome', html: '<b>Hi</b>', from_name: 'MyShop' });
+  assert.equal(sendR.status, 200, JSON.stringify(sendR.body));
+  assert.equal(worker.last.html, '<b>Hi</b>');
+  assert.equal(worker.last.from.name, 'MyShop');
+  console.log(`✓ API /send                     From ${sendR.body.from} → ${sendR.body.to}`);
+
+  const otpR = await call('POST', '/api/v1/otp/send', { to: 'customer@example.com', app_name: 'MyShop', length: 6 });
+  assert.equal(otpR.status, 200, JSON.stringify(otpR.body));
+  const code = worker.last.subject.match(/^(\d{6}) is your MyShop verification code$/)?.[1];
+  assert.ok(code, `OTP subject: ${worker.last.subject}`);
+  assert.match(worker.last.html, /Your verification code/);
+  const wrong = await call('POST', '/api/v1/otp/verify', { otp_id: otpR.body.otp_id, code: code === '000000' ? '111111' : '000000' });
+  assert.deepEqual([wrong.body.valid, wrong.body.reason], [false, 'invalid_code']);
+  const right = await call('POST', '/api/v1/otp/verify', { otp_id: otpR.body.otp_id, code });
+  assert.equal(right.body.valid, true);
+  const again = await call('POST', '/api/v1/otp/verify', { otp_id: otpR.body.otp_id, code });
+  assert.deepEqual([again.body.valid, again.body.reason], [false, 'not_found']);
+  console.log(`✓ API OTP send → verify          code ${code} · wrong rejected · single-use`);
+
+  const docs = await fetch(`${base}/docs`).then((r) => r.text());
+  assert.match(docs, /otp\/verify/);
+
+  p = await say('🔑 API');
+  assert.match(p.text, /<b>1\.<\/b> 🔑 <code>crv_live_/);
+  p = await tap(/^« 1 »$/);
+  step('key detail', p);
+  p = await tap(/Revoke/);
+  p = await tap(/Yes, revoke/);
+  assert.equal((await call('GET', '/api/v1/me')).status, 401, 'revoked key rejected');
+  step('key revoked → 401', p);
+  api.close();
+}
+
 p = await say('🌐 Domains');
 p = await tap(/^« 1 »$/);
 p = await tap(/Create address here/);
@@ -359,7 +428,7 @@ assert.match(p.text, /No mail yet/);
 step('delete mail', p);
 
 p = await say('👤 Profile');
-assert.match(p.text, /Sent today ~ <b>2<\/b>/);
+assert.match(p.text, /Sent today ~ <b>4<\/b>/); // 2 from the bot + 2 through the API
 step('profile after sends', p);
 
 p = await callback('t:zzzz');

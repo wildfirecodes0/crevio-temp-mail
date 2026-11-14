@@ -36,6 +36,25 @@ A disposable-email bot with a UI built around how people actually use temp mail:
 
 > On the Render free plan the service sleeps after about 15 min without traffic. The bot pings its own `/health` every 10 min so live push keeps working.
 
+## 🔑 Developer API (send mail & OTPs from your app)
+
+Every user can create API keys in the bot (🔑 API in the menu) and send mail and one-time codes from their own website or backend, through Crevio. Full docs are at `https://<your-app>.onrender.com/docs`.
+
+| | |
+|---|---|
+| `POST /api/v1/send` | send an email: `to`, `subject`, `text`/`html`, optional `from`, `from_name`, `reply_to` |
+| `POST /api/v1/otp/send` | generate a code and email it in a branded template: `to`, `app_name`, `length` (4–8), `ttl` (60–3600 s) → `otp_id` |
+| `POST /api/v1/otp/verify` | `otp_id` + `code` → `{ valid: true }`; single-use, 5 attempts |
+| `GET /api/v1/me` | account, addresses, today's usage |
+
+```bash
+curl -X POST https://<your-app>.onrender.com/api/v1/otp/send   -H "Authorization: Bearer crv_live_…" -H "Content-Type: application/json"   -d '{"to":"user@example.com","app_name":"MyApp"}'
+```
+
+- Keys are shown once and stored only as SHA-256 hashes. Users can revoke them anytime, and `/ban` blocks a user's API too.
+- API mail uses the same sending route as the bot (the user's own domain, or the shared relay) and counts toward the same daily limit. Every API request is rate-limited per key.
+- API mail goes out from **your** relay domain, so watch `/stats` and keep `SEND_LIMIT_SHARED` sensible to protect the domain's reputation.
+
 ## Turning on sending for everyone (one-time, admin)
 
 1. Add your domain in 🌐 Domains and finish all steps, including **step 6** (Email Service sending + `send_email` binding).
@@ -74,6 +93,8 @@ The worker forwards each incoming mail to `POST /inbound` on the bot, signed wit
 | `ALLOW_USER_DOMAINS` | `1` | `0` = only admins add domains |
 | `SEND_LIMIT_OWN` | `0` | daily sends on the user's own domain (0 = unlimited) |
 | `SEND_LIMIT_SHARED` | `50` | daily sends per user through the relay / shared domains (0 = unlimited) |
+| `API_MAX_KEYS` | `5` | API keys per user |
+| `API_RATE_PER_MIN` | `30` | API requests per minute per key |
 | `SEND_RELAY_DOMAIN` | first shared sending domain | which domain relays mail for temp addresses |
 | `INBOUND_MAX_MB` | `15` | max inbound mail size |
 | `PUBLIC_URL` | `RENDER_EXTERNAL_URL` | https URL → webhook mode |

@@ -428,6 +428,82 @@ export const composeUnavailable = (isAdmin) =>
       : 'The bot owner hasn’t enabled sending yet. You can still add your own domain in 🌐 Domains and send from it directly.',
   ]);
 
+// ── developer API ────────────────────────────────────────────────────────
+const keyUse = (k) => (k.last_used ? `used ${ago(Number(k.last_used))}` : 'never used');
+
+export function apiHome(keys, { base, sentToday, limit, sendingOn }) {
+  const lines = [head('🔑 Developer API', `${plural(keys.length, 'key')}`), '', 'Send mail and OTP codes from your own website or app, through Crevio.', ''];
+  if (keys.length) {
+    keys.forEach((k, i) => lines.push(`<b>${i + 1}.</b> 🔑 <code>${esc(k.prefix)}…</code> ~ <b>${esc(k.name)}</b> · <i>${keyUse(k)}</i>`, ''));
+  } else {
+    lines.push('<i>No keys yet. Tap ➕ New key to create one.</i>', '');
+  }
+  lines.push(
+    tree([
+      ['🌐', 'Base URL', `<code>${esc(base)}</code>`],
+      ['📤', 'Sent today', `<b>${sentToday}</b>${limit ? ` of ${limit}` : ' · no daily limit'}`],
+      ['⚡', 'Rate limit', `${config.apiRatePerMin} requests / min / key`],
+      ['✉️', 'Sending', sendingOn ? 'enabled' : '<b>not enabled yet</b> · <i>API calls will fail until it is</i>'],
+    ]),
+    '',
+    hint(keys.length ? 'Tap a number to manage a key.' : 'Keys are shown once. Keep them on your server, never in app or browser code.'),
+  );
+  return lines.join('\n');
+}
+
+export const askKeyName = () =>
+  join([head('➕ New API key'), 'Send a name for this key, like <code>My website</code>, or tap ⏭ Skip.', '', hint('The name only helps you tell your keys apart.')]);
+
+export const keyCreated = (k, secret) =>
+  join([
+    head('🔑 Key created', esc(k.name)),
+    card(`<code>${esc(secret)}</code>\n<i>tap to copy</i>`),
+    '⚠️ <b>Copy it now.</b> For your security this is the only time the full key is shown.',
+    '',
+    tree([
+      ['🔐', 'Use as', '<code>Authorization: Bearer &lt;key&gt;</code>'],
+      ['🖥', 'Keep it', 'on your server, in an environment variable'],
+    ]),
+  ]);
+
+export const keyDetail = (k) =>
+  join([
+    head('🔑 API key', esc(k.name)),
+    card(`<code>${esc(k.prefix)}…</code>`),
+    tree([
+      ['🏷', 'Name', esc(k.name)],
+      ['📅', 'Created', `<b>${fmtDate(Number(k.created_at))}</b> · <i>${ago(Number(k.created_at))}</i>`],
+      ['🕓', 'Last used', k.last_used ? `<b>${ago(Number(k.last_used))}</b>` : '<i>never</i>'],
+      ['📊', 'Requests', `<b>${k.uses || 0}</b>`],
+    ]),
+    '',
+    hint('Lost the key or think it leaked? Revoke it and create a new one.'),
+  ]);
+
+export const confirmRevoke = (k) =>
+  join([head('🗑 Revoke this key?'), card(`<code>${esc(k.prefix)}…</code> · ${esc(k.name)}`), hint('Apps using it will stop working immediately. This can’t be undone.')]);
+
+export const apiExamples = (base) =>
+  join([
+    head('🧪 API examples'),
+    '<b>1. Send an OTP</b>',
+    `<pre><code class="language-bash">curl -X POST ${esc(base)}/otp/send \\
+ -H "Authorization: Bearer $KEY" \\
+ -H "Content-Type: application/json" \\
+ -d '{"to":"user@example.com","app_name":"MyApp"}'</code></pre>`,
+    '<b>2. Verify it</b>',
+    `<pre><code class="language-bash">curl -X POST ${esc(base)}/otp/verify \\
+ -H "Authorization: Bearer $KEY" \\
+ -H "Content-Type: application/json" \\
+ -d '{"otp_id":"otp_…","code":"482913"}'</code></pre>`,
+    '<b>3. Send any email</b>',
+    `<pre><code class="language-bash">curl -X POST ${esc(base)}/send \\
+ -H "Authorization: Bearer $KEY" \\
+ -H "Content-Type: application/json" \\
+ -d '{"to":"user@example.com","subject":"Hi","html":"&lt;b&gt;Hello&lt;/b&gt;"}'</code></pre>`,
+    hint('Full reference with Node.js and Python examples: 📖 Docs.'),
+  ]);
+
 // ── errors ───────────────────────────────────────────────────────────────
 export function problem(kind, extra = '') {
   const map = {
@@ -449,6 +525,7 @@ export function problem(kind, extra = '') {
     badto: ['📮 That’s not an email address', 'Send it like <code>name@example.com</code>.'],
     toobig: ['📎 Too large', 'Attachments are limited to 15 MB in total.'],
     limit: [`🗂 All ${config.maxInboxes} slots are in use`, 'Delete an address in 🗂 Addresses to make room.'],
+    keylimit: [`🔑 You already have ${config.apiMaxKeys} keys`, 'Revoke one you don’t use to create a new key.'],
   };
   const [title, text] = map[kind] || map.down;
   return join([head(title), text, extra ? `\n${hint(`Reason: ${esc(truncate(extra, 300))}`)}` : null]);

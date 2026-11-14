@@ -8,8 +8,10 @@ import { handleInbound, setInboundHandler } from './inbound.js';
 import { warmDomains, publicDomains } from './providers/index.js';
 import { warmCards } from './cards.js';
 import { handleViewer } from './viewer.js';
+import { handleApi, handleDocs, startApiHousekeeping } from './api.js';
 
 await migrate();
+startApiHousekeeping();
 warmDomains();
 publicDomains().then((d) => warmCards(d.length)).catch(() => {});
 const bot = createBot();
@@ -37,6 +39,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (onUpdate && req.method === 'POST' && pathname === config.webhookPath) return await onUpdate(req, res);
     if (req.method === 'POST' && pathname === '/inbound') return await handleInbound(req, res);
+    if (pathname.startsWith('/api/v1/')) return await handleApi(req, res, pathname);
+    if (req.method === 'GET' && (pathname === '/docs' || pathname === '/api')) return handleDocs(req, res);
     if (req.method === 'GET' && pathname.startsWith('/v/')) return await handleViewer(req, res, decodeURIComponent(pathname.slice(3)));
     res.writeHead(404).end('not found');
   } catch (e) {

@@ -54,6 +54,13 @@ export async function migrate() {
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, inbox_id INTEGER, to_addr TEXT, subject TEXT,
         created_at INTEGER NOT NULL)`,
       `CREATE INDEX IF NOT EXISTS idx_sent_user ON sent_log(user_id, created_at)`,
+      `CREATE TABLE IF NOT EXISTS api_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, name TEXT, prefix TEXT NOT NULL,
+        hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, last_used INTEGER, uses INTEGER NOT NULL DEFAULT 0,
+        revoked INTEGER NOT NULL DEFAULT 0)`,
+      `CREATE TABLE IF NOT EXISTS otps (
+        id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, key_id INTEGER, to_addr TEXT NOT NULL, code_hash TEXT NOT NULL,
+        expires_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`,
     ],
     'write',
   );
@@ -103,6 +110,7 @@ async function load() {
   for (const r of await all(`SELECT * FROM users`)) users.set(Number(r.id), plain(r));
   for (const r of await all(`SELECT * FROM inboxes`)) inboxes.set(Number(r.id), hydrateInbox(r));
   domains = (await all(`SELECT * FROM domains`)).map(plain);
+  await loadApiKeys();
   console.log(`  cache: ${users.size} users · ${inboxes.size} inboxes · ${domains.length} custom domains`);
 }
 
@@ -157,6 +165,7 @@ export function bumpUser(id, field, n = 1) {
 
 export function deleteUser(uid) {
   for (const ib of listInboxes(uid)) inboxes.delete(ib.id);
+  apiKeys = apiKeys.filter((k) => Number(k.user_id) !== Number(uid));
   users.delete(Number(uid));
   db.batch(
     [
@@ -166,6 +175,8 @@ export function deleteUser(uid) {
       { sql: `DELETE FROM flags WHERE inbox_id IN (SELECT id FROM inboxes WHERE user_id = ?)`, args: [uid] },
       { sql: `DELETE FROM inboxes WHERE user_id = ?`, args: [uid] },
       { sql: `DELETE FROM sent_log WHERE user_id = ?`, args: [uid] },
+      { sql: `UPDATE api_keys SET revoked = 1 WHERE user_id = ?`, args: [uid] },
+      { sql: `DELETE FROM otps WHERE user_id = ?`, args: [uid] },
       { sql: `UPDATE domains SET owner_id = NULL, public = 0, verified = 0 WHERE owner_id = ?`, args: [uid] },
       { sql: `DELETE FROM users WHERE id = ?`, args: [uid] },
     ],
@@ -422,6 +433,54 @@ export function noteSent(userId) {
   const c = sentToday.get(userId);
   if (c) c.n++;
 }
+
+// ── developer API keys (only a SHA-256 hash of each key is stored) ───────
+let apiKeys = []; // cached rows
+
+export async function loadApiKeys() {
+  apiKeys = (await all(`SELECT * FROM api_keys WHERE revoked = 0`)).map(plain);
+}
+export const userApiKeys = (uid) => apiKeys.filter((k) => Number(k.user_id) === Number(uid)).sort((a, b) => a.id - b.id);
+export const findApiKeyByHash = (hash) => apiKeys.find((k) => k.hash === hash) ?? null;
+export const getApiKey = (id) => apiKeys.find((k) => Number(k.id) === Number(id)) ?? null;
+
+export async function addApiKey({ userId, name, prefix, hash }) {
+  const t = now();
+  const r = await db.execute({
+    sql: `INSERT INTO api_keys (user_id, name, prefix, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
+    args: [userId, name, prefix, hash, t],
+  });
+  const k = { id: Number(r.lastInsertRowid), user_id: userId, name, prefix, hash, created_at: t, last_used: null, uses: 0, revoked: 0 };
+  apiKeys.push(k);
+  return k;
+}
+
+export function touchApiKey(k) {
+  k.last_used = now();
+  k.uses = (k.uses || 0) + 1;
+  bg(`UPDATE api_keys SET last_used = ?, uses = uses + 1 WHERE id = ?`, [k.last_used, k.id]);
+}
+
+export function revokeApiKey(id) {
+  apiKeys = apiKeys.filter((k) => Number(k.id) !== Number(id));
+  bg(`UPDATE api_keys SET revoked = 1 WHERE id = ?`, [id]);
+}
+
+export function revokeUserApiKeys(uid) {
+  for (const k of userApiKeys(uid)) revokeApiKey(k.id);
+}
+
+// ── OTPs (code stored hashed, short-lived) ───────────────────────────────
+export async function addOtp(o) {
+  await db.execute({
+    sql: `INSERT INTO otps (id, user_id, key_id, to_addr, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [o.id, o.userId, o.keyId, o.to, o.codeHash, o.expiresAt, now()],
+  });
+}
+export const getOtp = (id) => one(`SELECT * FROM otps WHERE id = ?`, [id]).then((r) => (r ? plain(r) : null));
+export const bumpOtpAttempts = (id) => db.execute({ sql: `UPDATE otps SET attempts = attempts + 1 WHERE id = ?`, args: [id] });
+export const deleteOtp = (id) => db.execute({ sql: `DELETE FROM otps WHERE id = ?`, args: [id] });
+export const purgeOtps = () => bg(`DELETE FROM otps WHERE expires_at < ?`, [now() - 3600_000]);
 
 // ── admin ────────────────────────────────────────────────────────────────
 export function stats() {
