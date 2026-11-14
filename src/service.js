@@ -1,59 +1,115 @@
-import * as mail from './mail.js';
-import * as store from './db.js';
-import { randomLocal, randomPassword } from './names.js';
+// Inbox operations on top of providers, with short-lived caches so the UI never waits twice.
 import crypto from 'node:crypto';
 import { config } from './config.js';
-
-/** Run fn(token), transparently re-logging in once if the JWT has expired. */
-export async function authed(ib, fn) {
-  try {
-    return await fn(ib.token);
-  } catch (e) {
-    if (e.status !== 401) throw e;
-    const token = await mail.login(ib.provider, ib.address, ib.password);
-    ib.token = token;
-    await store.updateToken(ib.id, token);
-    return fn(token);
-  }
-}
+import * as store from './db.js';
+import { provider, domainsFor } from './providers/index.js';
+import { randomLocal } from './names.js';
 
 export class UserFacingError extends Error {}
 
-/**
- * Create a new inbox for a user.
- * @param {object} user  users row
- * @param {{local?:string, provider?:string, domain?:string}} opts
- */
-export async function createInbox(user, opts = {}) {
-  const count = await store.countInboxes(user.id);
-  if (count >= config.maxInboxes) throw new UserFacingError('limit');
+// ── message list cache ───────────────────────────────────────────────────
+const lists = new Map(); // inboxId → { at, list }
+const fulls = new Map(); // `${inboxId}:${msgId}` → full message
+const FULL_MAX = 400;
 
-  let { provider, domain } = opts;
-  if (!provider || !domain) {
-    const domains = await mail.getDomains();
-    if (!domains.length) throw new UserFacingError('down');
-    ({ provider, domain } = domains[crypto.randomInt(domains.length)]);
+const decorate = async (ib, raw) => {
+  const f = await store.flags(ib.id);
+  return raw.filter((m) => !f.hidden.has(m.id)).map((m) => ({ ...m, seen: f.read.has(m.id) }));
+};
+
+/** Fresh list from the provider (and update cache). */
+export async function fetchList(ib) {
+  const raw = await provider(ib.provider).list(ib);
+  store.saveAuth(ib);
+  const list = await decorate(ib, raw);
+  lists.set(ib.id, { at: Date.now(), list });
+  return list;
+}
+
+/** Cached list if younger than maxAgeMs, else fetch. */
+export async function getList(ib, maxAgeMs = 0) {
+  const c = lists.get(ib.id);
+  if (c && Date.now() - c.at <= maxAgeMs) return c.list;
+  return fetchList(ib);
+}
+
+export const cachedList = (inboxId) => lists.get(inboxId) ?? null;
+export const invalidate = (inboxId) => lists.delete(inboxId);
+
+export async function getMessage(ib, msgId) {
+  const key = `${ib.id}:${msgId}`;
+  if (fulls.has(key)) return fulls.get(key);
+  const m = await provider(ib.provider).get(ib, msgId);
+  store.saveAuth(ib);
+  if (fulls.size >= FULL_MAX) fulls.delete(fulls.keys().next().value);
+  fulls.set(key, m);
+  return m;
+}
+
+export function primeMessage(ib, m) {
+  fulls.set(`${ib.id}:${m.id}`, m);
+}
+
+export async function markRead(ib, msgId) {
+  await store.setFlag(ib.id, msgId, 'read');
+  const c = lists.get(ib.id);
+  const hit = c?.list.find((m) => m.id === msgId);
+  if (hit) hit.seen = true;
+}
+
+export async function deleteMessage(ib, msgId) {
+  const p = provider(ib.provider);
+  if (p.caps.delete && p.remove) {
+    try {
+      await p.remove(ib, msgId);
+    } catch (e) {
+      if (e.status !== 404) console.warn(`[delete] ${ib.address}: ${e.message}`);
+    }
+  }
+  await store.setFlag(ib.id, msgId, 'hidden');
+  fulls.delete(`${ib.id}:${msgId}`);
+  const c = lists.get(ib.id);
+  if (c) c.list = c.list.filter((m) => m.id !== msgId);
+}
+
+export async function downloadAttachment(ib, msgId, att) {
+  const p = provider(ib.provider);
+  if (!p.caps.attachments || !p.attachment) throw new UserFacingError('noatt');
+  return p.attachment(ib, msgId, att);
+}
+
+// ── create / destroy ─────────────────────────────────────────────────────
+export async function createInbox(user, opts = {}) {
+  if (store.countInboxes(user.id) >= config.maxInboxes) throw new UserFacingError('limit');
+
+  let { provider: pid, domain } = opts;
+  const options = await domainsFor(user.id);
+  if (pid && domain) {
+    if (!options.some((d) => d.provider === pid && d.domain === domain)) throw new UserFacingError('nodomain');
+  } else {
+    const pub = options.filter((d) => d.kind === 'public');
+    if (!pub.length) throw new UserFacingError('down');
+    ({ provider: pid, domain } = pub[crypto.randomInt(pub.length)]);
   }
 
+  const p = provider(pid);
   const custom = Boolean(opts.local);
-  const password = randomPassword();
   for (let attempt = 0; attempt < (custom ? 1 : 4); attempt++) {
-    const address = `${custom ? opts.local : randomLocal()}@${domain}`;
+    const local = custom ? opts.local : randomLocal();
     try {
-      const { accountId, token } = await mail.createAccount(provider, address, password);
+      const { address, auth } = await p.create(local, domain);
       const ttl = Number(user.default_ttl) || 0;
-      const id = await store.createInbox({
+      const ib = await store.createInbox({
         userId: user.id,
-        provider,
+        provider: pid,
         address,
-        password,
-        accountId,
-        token,
+        auth,
         expiresAt: ttl ? Date.now() + ttl * 1000 : null,
       });
-      return store.getInbox(id);
+      lists.set(ib.id, { at: Date.now(), list: [] });
+      return ib;
     } catch (e) {
-      if (e.status === 422 || e.status === 409) {
+      if (e.taken) {
         if (custom) throw new UserFacingError('taken');
         continue;
       }
@@ -64,12 +120,19 @@ export async function createInbox(user, opts = {}) {
   throw new UserFacingError('down');
 }
 
-/** Delete at the provider (best effort) and locally. */
-export async function destroyInbox(ib) {
+export async function destroyInbox(ib, { reason = 'deleted' } = {}) {
+  store.deleteInbox(ib.id);
+  lists.delete(ib.id);
+  store.bumpUser(ib.user_id, 'disposed');
   try {
-    await authed(ib, (t) => mail.deleteAccount(ib.provider, t, ib.account_id));
+    await provider(ib.provider).destroy(ib);
   } catch (e) {
-    if (e.status !== 404) console.warn(`[destroy] ${ib.address}: ${e.message}`);
+    if (e.status !== 404) console.warn(`[destroy:${reason}] ${ib.address}: ${e.message}`);
   }
-  await store.deleteInbox(ib.id);
 }
+
+export const canSendFrom = (ib) => {
+  if (!ib || ib.provider !== 'own') return false;
+  const d = store.findDomain(ib.address.split('@')[1]);
+  return Boolean(d?.verified && d.worker_url && d.can_send);
+};

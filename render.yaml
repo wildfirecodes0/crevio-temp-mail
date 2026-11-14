@@ -18,3 +18,7 @@ services:
         sync: false
       - key: ADMIN_IDS
         sync: false
+      - key: SEND_LIMIT_SHARED
+        value: 50
+      - key: ALLOW_USER_DOMAINS
+        value: 1

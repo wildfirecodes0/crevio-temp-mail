@@ -1,80 +1,98 @@
 # ✦ Crevio — Temp Mail for Telegram
 
-A disposable-email bot with a UI built around how people actually use temp mail: you need an address *now*, you need the code *now*, and then you want it gone.
+A disposable-email bot with a UI built around how people actually use temp mail: you need an address *now*, you need the code *now*, and then you want it gone. It also handles **your own domain**, for receiving and for sending.
 
-## What makes it different
+## Features
 
 | | |
 |---|---|
-| **One living panel** | Navigation edits a single message in place, so the chat doesn't fill up with menus. |
-| **⧉ One-tap copy** | Address and OTP codes use Telegram's native copy buttons. No long-press, no selecting text. |
-| **🔑 OTP detection** | Codes like `482913`, `731-204` or `K7Q2ZP` are found and shown at the top of the mail and in the push alert. |
-| **✅ Action links** | "Verify email", "Sign in" and "Reset password" links become buttons. |
-| **🛰 Live push** | New mail arrives as a compact alert with the code and buttons already attached. |
-| **🖥 Full viewer** | A Telegram Mini App renders the original HTML email in a sandboxed frame that follows the user's Telegram theme. |
-| **💣 Self-destruct** | Set an address to wipe itself after 10 min, 1 h, 24 h or 7 d. You can also set a default timer. |
-| **🗂 Multiple addresses** | Up to 5 per user (configurable), with readable names like `lunar-otter47` or your own custom name. |
-| **📎 Attachments** | Get any attachment as a Telegram document. |
+| **⌨️ Keyboard menu** | A persistent bottom menu: Inbox · New Mail · Addresses · Compose · Domains · Profile · Settings · Help. |
+| **One living panel** | Taps edit a single message in place. Menu taps replace the old panel, so the chat never fills up. |
+| **⚡ Fast** | Every tap is acknowledged instantly. Users, addresses and domains are served from memory, inbox lists are cached, and slow work shows a loading frame and then fills in. |
+| **🌐 18+ domains** | mail.tm, temp-mail.io and Guerrilla Mail domains, all pickable (plus mail.gw when it's up). |
+| **🏷 Bring your own domain** | Any user can add their domain and receive mail on *anything*@theirdomain through Cloudflare Email Routing (free). |
+| **✉️ Send mail** | Compose, reply and attach files from a custom-domain address. Mail goes out through the domain owner's own Cloudflare Worker, with no SendGrid/Mailgun-style middleman. |
+| **👤 Profile** | Name, username, Telegram ID, language, join date, generated / disposed / live / received / sent counts, domains and preferences. |
+| **🔑 OTP detection** | Codes like `482913`, `731-204` and `K7Q2ZP` get a native ⧉ copy button. Verify, sign-in and reset links become buttons. |
+| **🛰 Live push** | New mail shows up as a compact alert. Custom-domain mail is pushed the instant it arrives. |
+| **🖥 Full viewer** | A Telegram Mini App renders the original HTML email in a sandboxed frame. |
+| **💣 Self-destruct** | Per-address timers (10 min to 7 days) and a default timer. |
+| **Admin** | `/stats`, `/broadcast` (reply to a message), `/ban <id>`, `/unban <id>`, and sharing a domain with all users (💎 premium). |
 
-Mail is provided by the free [mail.tm](https://mail.tm) / [mail.gw](https://mail.gw) APIs. Turso (libSQL) stores the data.
+## Deploy (Render + Turso)
 
-## Stack
-Node 20+, [grammY](https://grammy.dev), `@libsql/client` (Turso) and `html-to-text`. There's no web framework: it uses a plain `node:http` server for the webhook, the health check and the viewer.
+1. **Bot**: get a token from [@BotFather](https://t.me/BotFather) with `/newbot`.
+2. **Database**:
+   ```bash
+   turso db create crevio
+   turso db show crevio --url        # → TURSO_DATABASE_URL
+   turso db tokens create crevio     # → TURSO_AUTH_TOKEN
+   ```
+3. **Render**: New → Blueprint → this repo (`render.yaml` is included). Set `BOT_TOKEN`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and `ADMIN_IDS` (your Telegram ID, shown in 👤 Profile).
+4. Deploy. The webhook, commands and Mini App viewer are configured automatically from `RENDER_EXTERNAL_URL`.
 
-## 1. Create the bot
-1. Open [@BotFather](https://t.me/BotFather) and send `/newbot`. Copy the token.
-2. Optional: use `/setuserpic` to give it a logo.
+> On the Render free plan the service sleeps after about 15 min without traffic. The bot pings its own `/health` every 10 min so live push keeps working.
 
-## 2. Create the Turso database
-```bash
-turso db create crevio
-turso db show crevio --url          # → TURSO_DATABASE_URL
-turso db tokens create crevio       # → TURSO_AUTH_TOKEN
-```
-The tables are created automatically on first boot.
+## Custom domains (receive + send)
 
-## 3. Deploy on Render
-1. **New → Blueprint** and pick this repo (`render.yaml` is included). You can also use **New → Web Service** with build `npm install --omit=dev` and start `npm start`.
-2. Set the env vars `BOT_TOKEN`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` and optionally `ADMIN_IDS` (your Telegram user id).
-3. Deploy. Render provides `RENDER_EXTERNAL_URL` automatically, so the bot sets up its own **webhook** and the Mini App viewer. There's nothing else to configure.
+Everything is guided inside the bot (🌐 Domains → ➕ Add my domain). The steps are:
 
-> **Free plan note:** Render free services sleep after about 15 min without traffic. On Render the bot pings its own `/health` every 10 min so the live mail push keeps working. For extra safety you can also add a free UptimeRobot monitor on `https://<your-app>.onrender.com/health`.
+1. Add the domain to a free Cloudflare account.
+2. Add the **TXT** record `_crevio.<domain>` that the bot shows. This proves you own the domain.
+3. Email → **Email Routing** → enable. Cloudflare adds the MX records.
+4. Tap **📄 Worker files** in the bot and deploy `crevio-worker.js` (dashboard paste, or `npx wrangler deploy` with the included `wrangler.toml`).
+5. Email Routing → Routing rules → **Catch-all → Send to a Worker** → the Crevio worker.
+6. Paste the worker URL into the bot.
+7. *Sending (optional):* in Cloudflare **Email Service**, onboard the domain for sending and keep the `send_email` binding named `EMAIL`.
+
+The worker forwards each incoming mail to `POST /inbound` on the bot, signed with a per-domain key. The bot stores the mail in Turso and pushes it to the user immediately. For sending, the bot calls the worker's `/send`, and the worker calls `env.EMAIL.send()`.
+
+### About "unlimited" sending: what's actually possible
+- **Render can't send SMTP itself.** Free web services block outbound ports 25/465/587, and port 25 is blocked on paid plans too. That's why sending goes through Cloudflare's Worker binding over HTTPS.
+- **Cloudflare free plan:** sends only to *verified* destination addresses. **Workers Paid ($5/mo)** sends to any recipient, with a monthly allowance and then a small per-1,000 charge. Check Cloudflare's current pricing.
+- **Your own domain:** Crevio adds no daily cap there (`SEND_LIMIT_OWN=0`). Cloudflare's limits and your domain's reputation still apply. **Shared 💎 domains** are capped per user (`SEND_LIMIT_SHARED`, default 50/day) so one person can't burn the domain.
+- Public temp domains (mail.tm, guerrilla, temp-mail.io) are **receive-only**. Nobody can send from domains they don't own.
+
+## Env vars
+| var | default | |
+|---|---|---|
+| `BOT_TOKEN` | — | required |
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | `file:crevio.db` | required on Render |
+| `ADMIN_IDS` | | comma-separated Telegram IDs |
+| `MAX_INBOXES` | `5` | addresses per user |
+| `POLL_INTERVAL_SEC` | `8` | inbox polling for public providers |
+| `MAIL_PROVIDERS` | `tm,gw,tio,gm` | mail.tm, mail.gw, temp-mail.io, guerrillamail |
+| `ALLOW_USER_DOMAINS` | `1` | `0` = only admins add domains |
+| `SEND_LIMIT_OWN` | `0` | daily sends on the user's own domain (0 = unlimited) |
+| `SEND_LIMIT_SHARED` | `50` | daily sends on shared domains |
+| `INBOUND_MAX_MB` | `15` | max inbound mail size |
+| `PUBLIC_URL` | `RENDER_EXTERNAL_URL` | https URL → webhook mode |
+| `KEEP_ALIVE` | on when on Render | self-ping |
 
 ## Local development
 ```bash
-cp .env.example .env     # set BOT_TOKEN (Turso optional locally, falls back to crevio.db)
+cp .env.example .env
 npm install
-npm run dev              # long-polling mode
-npm run check            # offline smoke tests
+npm run dev          # long polling
+npm run check        # offline UI checks
+npm run simulate     # end-to-end: fake Telegram, real providers, custom-domain inbound + send
 ```
-
-## Env vars
-| var | required | default | |
-|---|---|---|---|
-| `BOT_TOKEN` | ✅ | | from BotFather |
-| `TURSO_DATABASE_URL` | ✅ on Render | `file:crevio.db` | |
-| `TURSO_AUTH_TOKEN` | ✅ on Render | | |
-| `ADMIN_IDS` | | | comma-separated ids for `/stats`, `/broadcast` |
-| `MAX_INBOXES` | | `5` | addresses per user |
-| `POLL_INTERVAL_SEC` | | `12` | how often inboxes are checked |
-| `MAIL_PROVIDERS` | | `tm,gw` | `tm` = mail.tm, `gw` = mail.gw |
-| `PUBLIC_URL` | | `RENDER_EXTERNAL_URL` | https URL → webhook mode |
-| `KEEP_ALIVE` | | on when on Render | `1`/`0` |
-
-## Admin
-- `/stats` shows users, 24 h actives, addresses and mails delivered.
-- `/broadcast` (sent as a reply to any message) copies that message to every user.
 
 ## Layout
 ```
 src/
-  index.js     http server, webhook/polling, boot
-  bot.js       all commands & button handlers
-  ui.js        every screen (text + keyboard)
-  poller.js    live push + self-destruct sweeper
-  mail.js      mail.tm / mail.gw API client
-  service.js   create/destroy inbox, auto re-login
-  extract.js   body text, OTP + action-link detection
-  viewer.js    signed Mini App email viewer
-  db.js        Turso schema & queries
+  index.js        http server: webhook, /inbound, /v/ viewer, /health
+  bot.js          menu, commands, every button & conversation flow
+  ui.js           every screen (text + keyboard)
+  service.js      inbox ops + caches
+  poller.js       live push + self-destruct sweeper
+  inbound.js      custom-domain mail receiver (MIME → Turso → push)
+  send.js         outbound mail via the domain's worker
+  domains.js      TXT/MX verification, worker health, worker file generator
+  db.js           Turso schema + write-through memory cache
+  providers/      mailtm, tempmailio, guerrilla, own (custom domain)
+worker/
+  crevio-worker.js   Cloudflare Email Worker template
 ```
+
+Note: Guerrilla Mail keeps messages for about 1 hour. mail.tm and temp-mail.io keep them longer. Custom domains keep mail until the user deletes it.

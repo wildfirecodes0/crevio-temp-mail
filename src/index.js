@@ -3,18 +3,22 @@ import { webhookCallback } from 'grammy';
 import { config } from './config.js';
 import { migrate } from './db.js';
 import { createBot, COMMANDS } from './bot.js';
-import { startPoller } from './poller.js';
+import { startPoller, pushMail } from './poller.js';
+import { handleInbound, setInboundHandler } from './inbound.js';
+import { warmDomains } from './providers/index.js';
 import { handleViewer } from './viewer.js';
 
 await migrate();
+warmDomains();
 const bot = createBot();
 await bot.init();
 console.log(`✦ Crevio up as @${bot.botInfo.username}`);
+setInboundHandler((ib, msgId) => pushMail(bot, ib, msgId));
 
 await bot.api.setMyCommands(COMMANDS).catch((e) => console.warn('setMyCommands:', e.message));
 await bot.api
   .setMyDescription(
-    'Crevio — disposable email inside Telegram.\n\n⚡ Address in one tap\n🔑 OTP codes detected & copyable\n🛰 New mail pushed live\n💣 Self-destruct timers',
+    'Crevio — disposable email inside Telegram.\n\n⚡ 15+ domains, address in one tap\n🔑 OTP codes detected & copyable\n🛰 New mail pushed live\n🏷 Bring your own domain: receive & send\n💣 Self-destruct timers',
   )
   .catch(() => {});
 await bot.api.setMyShortDescription('Burner email in one tap — live inbox, OTP copy, self-destruct.').catch(() => {});
@@ -30,6 +34,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ ok: true, bot: bot.botInfo.username, uptime: Math.round(process.uptime()) }));
     }
     if (onUpdate && req.method === 'POST' && pathname === config.webhookPath) return await onUpdate(req, res);
+    if (req.method === 'POST' && pathname === '/inbound') return await handleInbound(req, res);
     if (req.method === 'GET' && pathname.startsWith('/v/')) return await handleViewer(req, res, decodeURIComponent(pathname.slice(3)));
     res.writeHead(404).end('not found');
   } catch (e) {
@@ -45,6 +50,7 @@ server.listen(config.port, async () => {
       secret_token: config.webhookSecret,
       allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: false,
+      max_connections: 80,
     });
     console.log(`  webhook → ${config.publicUrl}/tg/…`);
   } else {

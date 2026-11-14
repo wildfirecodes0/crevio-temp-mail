@@ -2,8 +2,7 @@
 import crypto from 'node:crypto';
 import { config } from './config.js';
 import * as store from './db.js';
-import * as mail from './mail.js';
-import { authed } from './service.js';
+import { getMessage } from './service.js';
 import { esc, escAttr, fmtDate, fmtSize } from './utils.js';
 
 const TTL = 6 * 3600; // seconds a viewer link stays valid
@@ -44,11 +43,11 @@ function send(res, status, html) {
 export async function handleViewer(req, res, token) {
   const v = verify(token);
   if (!v) return send(res, 403, shell('Link expired', '<div class="empty">This link has expired.<br>Open the mail again from the bot.</div>'));
-  const ib = await store.getInbox(v.inboxId);
+  const ib = store.getInbox(v.inboxId);
   if (!ib) return send(res, 404, shell('Gone', '<div class="empty">This address no longer exists.</div>'));
   let msg;
   try {
-    msg = await authed(ib, (t) => mail.getMessage(ib.provider, t, v.msgId));
+    msg = await getMessage(ib, v.msgId);
   } catch (e) {
     return send(res, e.status === 404 ? 404 : 502, shell('Unavailable', '<div class="empty">Couldn’t load this mail right now.</div>'));
   }

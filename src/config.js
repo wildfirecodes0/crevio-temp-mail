@@ -33,7 +33,14 @@ export const config = {
     .filter(Boolean),
 
   maxInboxes: Number(env.MAX_INBOXES) || 5,
-  pollIntervalSec: Math.max(5, Number(env.POLL_INTERVAL_SEC) || 12),
+  pollIntervalSec: Math.max(4, Number(env.POLL_INTERVAL_SEC) || 8),
   keepAlive: env.KEEP_ALIVE ? env.KEEP_ALIVE === '1' : Boolean(env.RENDER_EXTERNAL_URL),
-  providers: (env.MAIL_PROVIDERS || 'tm,gw').split(',').map((s) => s.trim()).filter(Boolean),
+  providers: (env.MAIL_PROVIDERS || 'tm,gw,tio,gm').split(',').map((s) => s.trim()).filter(Boolean),
+
+  // Sending goes through the domain owner's own Cloudflare Worker. 0 = unlimited.
+  sendLimitOwn: Number(env.SEND_LIMIT_OWN) || 0,
+  sendLimitShared: env.SEND_LIMIT_SHARED === undefined ? 50 : Number(env.SEND_LIMIT_SHARED) || 0,
+  allowUserDomains: env.ALLOW_USER_DOMAINS !== '0',
+  inboundMaxBytes: (Number(env.INBOUND_MAX_MB) || 15) * 1024 * 1024,
+  verifyToken: (domain) => `crevio-verify=${derive(`verify:${domain}`).slice(0, 32)}`,
 };

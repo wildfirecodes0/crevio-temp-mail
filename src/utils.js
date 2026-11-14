@@ -50,3 +50,24 @@ export function fmtDate(ts) {
 }
 
 export const isNotModified = (e) => String(e?.description || e?.message || '').includes('message is not modified');
+
+export function decodeEntities(s) {
+  return String(s ?? '')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;|&#039;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
+}
+
+/** Resolve with fn()'s value, or with `fallback` if it takes longer than ms. */
+export function within(promise, ms, fallback) {
+  let t;
+  return Promise.race([promise, new Promise((r) => (t = setTimeout(() => r(fallback), ms)))]).finally(() => clearTimeout(t));
+}
+
+export const isEmail = (s) => /^[^\s@<>()[\],;:"]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(String(s || '').trim());
+export const isDomain = (s) => /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/i.test(String(s || '').trim());
