@@ -68,7 +68,7 @@ The worker forwards each incoming mail to `POST /inbound` on the bot, signed wit
 | `BOT_TOKEN` | — | required |
 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | `file:crevio.db` | required on Render |
 | `ADMIN_IDS` | | comma-separated Telegram IDs |
-| `MAX_INBOXES` | `5` | addresses per user |
+| `MAX_INBOXES` | `20` | addresses per user |
 | `POLL_INTERVAL_SEC` | `8` | inbox polling for public providers |
 | `MAIL_PROVIDERS` | `tm,gw,tio,gm` | mail.tm, mail.gw, temp-mail.io, guerrillamail |
 | `ALLOW_USER_DOMAINS` | `1` | `0` = only admins add domains |

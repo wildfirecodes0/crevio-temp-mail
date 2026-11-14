@@ -212,15 +212,38 @@ export const expired = (address) => ({
 });
 
 // ── addresses / timer / settings ─────────────────────────────────────────
-export function addresses(list, activeId) {
-  const lines = [`🗂 <b>Your addresses</b>  ·  <i>${list.length} of ${config.maxInboxes}</i>`, ''];
+const RULE = '────────────────────────';
+
+/** Numbered list (one page). ● marks the active address. */
+export function addresses(list, activeId, { offset = 0, total = list.length, page = 0, pages = 1 } = {}) {
+  const lines = [`<b>🗂 Your addresses</b>  ·  <i>${total} of ${config.maxInboxes}</i>`, RULE, ''];
   if (!list.length) lines.push('<i>No addresses yet. Tap ✨ New Mail.</i>');
-  list.forEach((ib) => {
+  list.forEach((ib, i) => {
     const on = Number(ib.id) === Number(activeId);
-    lines.push(`${on ? '◉' : '○'} ${addr(ib.address)}${on ? '  <b>active</b>' : ''}`, `     <i>${sourceLabel(ib)} · ${ago(Number(ib.created_at))} · ${timerShort(ib)}</i>`);
+    lines.push(`<b>${offset + i + 1}.</b> ${on ? '●' : '○'} ${addr(ib.address)} ~ <b>${ago(Number(ib.created_at))}</b>`, '');
   });
-  if (list.length) lines.push('', '<i>Tap an address below to switch to it.</i>');
+  if (list.length) lines.push(`<i>● active${pages > 1 ? `  ·  page ${page + 1} of ${pages}` : ''}  ·  tap a number to open it</i>`);
   return lines.join('\n');
+}
+
+/** Full detail card for one address. */
+export function addressDetail(ib, { index, count, isActive, counts, route }) {
+  const [, domain] = ib.address.split('@');
+  const created = Number(ib.created_at);
+  const mails = counts ? (counts.total ? `<b>${counts.total}</b>${counts.unread ? `  ·  <b>${counts.unread} new</b>` : ''}` : '<i>none yet</i>') : '<i>syncing…</i>';
+  const sending = route ? (route.mode === 'direct' ? '✅ sends directly' : '✅ via Crevio relay, replies come back here') : '— receive only';
+  return [
+    `<b>📮 Address ${index} of ${count}</b>  ·  ${isActive ? '● <b>active</b>' : '○ <i>inactive</i>'}`,
+    RULE,
+    card(`${addr(ib.address)}\n<i>tap to copy</i>`),
+    `├ 🌐 <b>Domain</b>      ${esc(domain)}`,
+    `├ 🛰 <b>Provider</b>    ${sourceLabel(ib)}`,
+    `├ 📬 <b>Mails</b>        ${mails}`,
+    `├ 📥 <b>Received</b>   ${ib.received || 0}   📤 <b>Sent</b> ${ib.sent || 0}`,
+    `├ 🕓 <b>Created</b>     ${fmtDate(created)} · ${ago(created)}`,
+    `├ 💣 <b>Timer</b>         ${ib.expires_at ? `self-destructs in <b>${shortDur(Math.max(0, (Number(ib.expires_at) - Date.now()) / 1000))}</b>` : 'none, lives until deleted'}`,
+    `└ ✉️ <b>Sending</b>     ${sending}`,
+  ].join('\n');
 }
 
 export const confirmDelete = (ib) => `🗑 <b>Delete this address?</b>\n\n${card(addr(ib.address))}\n<i>The address and every mail in it will be wiped. This can’t be undone.</i>`;

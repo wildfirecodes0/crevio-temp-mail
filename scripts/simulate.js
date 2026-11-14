@@ -218,8 +218,31 @@ p = await tap(/Default timer/);
 step('settings toggles', p);
 
 p = await say('🗂 Addresses');
-p = await tap(/^○/);
-step('switch address', p);
+assert.match(p.text, /<b>1\.<\/b> [●○] <code>.+<\/code> ~ <b>/);
+assert.equal((p.text.match(/●/g) || []).length, 2, 'one ● in the list plus the legend');
+assert.ok(find(/^« 1 »$/));
+step('addresses list', p);
+p = await tap(/^« 1 »$/);
+assert.match(p.text, /Address 1 of/);
+step('address detail', p);
+p = await tap(/Make active/);
+assert.match(p.text, /● <b>active<\/b>/);
+step('make active', p);
+p = await tap(/Timer/);
+p = await tap(/1 hour/);
+assert.match(p.text, /Address 1 of/);
+assert.match(p.text, /self-destructs in/);
+step('per-address timer → back to detail', p);
+p = await tap(/All addresses/);
+
+// paging: more than 10 addresses → « n » buttons for 10, then Next ›
+for (let i = 0; i < 8; i++) await store.createInbox({ userId: user.id, provider: 'own', address: `bulk${i}@paging.test`, auth: {} });
+p = await say('🗂 Addresses'); // opens on the page holding the active address
+if (btns().some((b) => b.text === 'Next ›')) p = await tap(/Next/);
+else p = await tap(/Prev/);
+assert.match(p.text, /page \d of 2/);
+step('addresses paging', p);
+for (const ib of store.listInboxes(user.id).filter((x) => x.address.endsWith('@paging.test'))) store.deleteInbox(ib.id);
 
 p = await say('✉️ Compose');
 assert.match(p.text, /isn’t switched on/);

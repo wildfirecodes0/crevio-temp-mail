@@ -32,7 +32,7 @@ export const config = {
     .map((s) => Number(s.trim()))
     .filter(Boolean),
 
-  maxInboxes: Number(env.MAX_INBOXES) || 5,
+  maxInboxes: Number(env.MAX_INBOXES) || 20,
   pollIntervalSec: Math.max(4, Number(env.POLL_INTERVAL_SEC) || 8),
   keepAlive: env.KEEP_ALIVE ? env.KEEP_ALIVE === '1' : Boolean(env.RENDER_EXTERNAL_URL),
   providers: (env.MAIL_PROVIDERS || 'tm,gw,tio,gm').split(',').map((s) => s.trim()).filter(Boolean),

@@ -294,20 +294,64 @@ S.download = async (ctx, ib, msg, a) => {
 };
 
 // ── addresses / timer / settings ─────────────────────────────────────────
-S.addresses = (ctx, opts) => {
+const ADDR_PAGE = 10;
+
+/** Address list: numbered, ● for the active one; « n » buttons open each address. 10 per page. */
+S.addresses = (ctx, opts = {}) => {
   const user = userOf(ctx);
   const list = store.listInboxes(user.id);
   const active = store.getActiveInbox(user);
-  const kb = list.map((ib) => [
-    act(`${ib.id === active?.id ? '◉' : '○'}  ${ib.address}`, (c) => {
-      store.setUser(c.from.id, { active_inbox: ib.id });
-      toast(c, `◉ ${ib.address}`);
-      return S.home(c);
-    }),
-  ]);
-  kb.push([list.length < config.maxInboxes ? act('✨ New', (c) => S.picker(c)) : null, active ? act('🗑 Delete active', (c) => S.confirmDelete(c, active)) : null]);
-  kb.push([homeBtn]);
-  return present(ctx, { name: 'addresses', text: ui.addresses(list, active?.id), kb }, opts);
+  const pages = Math.max(1, Math.ceil(list.length / ADDR_PAGE));
+  const page = Math.min(Math.max(0, opts.page ?? Math.floor(Math.max(0, list.findIndex((x) => x.id === active?.id)) / ADDR_PAGE)), pages - 1);
+  const slice = list.slice(page * ADDR_PAGE, page * ADDR_PAGE + ADDR_PAGE);
+
+  const kb = [];
+  for (let i = 0; i < slice.length; i += 5) {
+    kb.push(slice.slice(i, i + 5).map((ib, j) => act(`« ${page * ADDR_PAGE + i + j + 1} »`, (c) => S.address(c, ib.id))));
+  }
+  if (pages > 1) {
+    kb.push([
+      page > 0 ? act('‹ Prev', (c) => S.addresses(c, { page: page - 1 })) : null,
+      act(`${page + 1} / ${pages}`, (c) => toast(c, `${list.length} addresses`)),
+      page < pages - 1 ? act('Next ›', (c) => S.addresses(c, { page: page + 1 })) : null,
+    ]);
+  }
+  kb.push([list.length < config.maxInboxes ? act('✨ New address', (c) => S.picker(c)) : null]);
+  return present(ctx, { name: 'addresses', text: ui.addresses(slice, active?.id, { offset: page * ADDR_PAGE, total: list.length, page, pages }), kb }, opts);
+};
+
+/** One address in full detail, with everything you can do to it. */
+S.address = async (ctx, inboxId, { toast: t } = {}) => {
+  const user = userOf(ctx);
+  const ib = store.getOwnedInbox(user.id, inboxId);
+  if (!ib) return S.addresses(ctx);
+  const list = store.listInboxes(user.id);
+  const isActive = store.getActiveInbox(user)?.id === ib.id;
+  const cached = svc.cachedList(ib.id);
+  let msgs = cached && Date.now() - cached.at < 60_000 ? cached.list : null;
+  if (!msgs) {
+    busy(ctx);
+    msgs = await within(svc.fetchList(ib).catch(() => null), 2000, cached?.list ?? null);
+  }
+  if (t) toast(ctx, t);
+  const c = counts(msgs);
+  const route = svc.sendRoute(ib);
+  return present(ctx, {
+    name: 'address',
+    text: ui.addressDetail(ib, { index: list.findIndex((x) => x.id === ib.id) + 1, count: list.length, isActive, counts: c, route }),
+    kb: [
+      [copy('⧉ Copy address', ib.address)],
+      [
+        isActive ? null : act('● Make active', (x) => {
+          store.setUser(x.from.id, { active_inbox: ib.id });
+          return S.address(x, ib.id, { toast: '● Now active' });
+        }),
+        act(c?.total ? `📥 Inbox · ${c.total}` : '📥 Inbox', (x) => S.inbox(x, ib.id)),
+      ],
+      [act('💣 Timer', (x) => S.timer(x, ib.id)), route ? act('✉️ Compose', (x) => S.compose(x, ib.id)) : null],
+      [act('🗑 Delete', (x) => S.confirmDelete(x, ib)), act('‹ All addresses', (x) => S.addresses(x))],
+    ],
+  });
 };
 
 S.confirmDelete = (ctx, ib) =>
@@ -318,21 +362,23 @@ S.confirmDelete = (ctx, ib) =>
       await svc.destroyInbox(ib);
       toast(c, '🗑 Address deleted');
       return store.countInboxes(c.from.id) ? S.addresses(c) : S.home(c);
-    }), act('✖ Keep it', (c) => S.addresses(c))]],
+    }), act('✖ Keep it', (c) => S.address(c, ib.id))]],
   });
 
-S.timer = (ctx) => {
-  const ib = activeOf(ctx);
+/** Self-destruct timer for an address (the active one by default). */
+S.timer = (ctx, inboxId) => {
+  const ib = inboxId ? store.getOwnedInbox(ctx.from.id, inboxId) : activeOf(ctx);
   if (!ib) return S.home(ctx);
+  const back = inboxId ? (c, t) => S.address(c, ib.id, { toast: t }) : (c, t) => S.home(c, { toast: t });
   const set = (sec, label) => (c) => {
     store.setExpiry(ib.id, sec ? Date.now() + sec * 1000 : null);
-    return S.home(c, { toast: sec ? `💣 Armed: ${label}` : '♾ Timer off' });
+    return back(c, sec ? `💣 Armed: ${label}` : '♾ Timer off');
   };
   const opt = (sec, label) => act(`${!sec && !ib.expires_at ? '✓ ' : ''}${sec ? '⏱' : '♾'} ${label}`, set(sec, label));
   return present(ctx, {
     name: 'timer',
     text: ui.timer(ib),
-    kb: [[opt(600, '10 min'), opt(3600, '1 hour')], [opt(86400, '24 hours'), opt(604800, '7 days')], [opt(0, 'Never')], [act('‹ Back', (c) => S.home(c))]],
+    kb: [[opt(600, '10 min'), opt(3600, '1 hour')], [opt(86400, '24 hours'), opt(604800, '7 days')], [opt(0, 'Never')], [act('‹ Back', (c) => back(c))]],
   });
 };
 
