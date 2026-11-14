@@ -204,8 +204,9 @@ export function getActiveInbox(user) {
 export async function createInbox({ userId, provider, address, auth, expiresAt }) {
   const t = now();
   const r = await db.execute({
-    sql: `INSERT INTO inboxes (user_id, provider, address, auth, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-    args: [userId, provider, address, JSON.stringify(auth), expiresAt ?? null, t],
+    // `password` is NOT NULL without a default in databases created by v1, so always fill it.
+    sql: `INSERT INTO inboxes (user_id, provider, address, password, auth, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [userId, provider, address, auth?.password ?? '', JSON.stringify(auth), expiresAt ?? null, t],
   });
   const ib = {
     id: Number(r.lastInsertRowid), user_id: userId, provider, address, auth, expires_at: expiresAt ?? null,

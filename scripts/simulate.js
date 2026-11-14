@@ -12,6 +12,22 @@ process.env.TURSO_DATABASE_URL = `file:${path.join(tmp, 'sim.db').replace(/\\/g,
 process.env.ADMIN_IDS = '1001';
 process.env.PUBLIC_URL = 'https://crevio.test';
 
+// Start from the v1 schema (what long-running production databases have), so migrations and
+// inserts are tested against old NOT NULL constraints, not just a fresh schema.
+{
+  const { createClient } = await import('@libsql/client');
+  const v1 = createClient({ url: process.env.TURSO_DATABASE_URL });
+  await v1.batch([
+    `CREATE TABLE users (id INTEGER PRIMARY KEY, first_name TEXT, username TEXT, active_inbox INTEGER, notify INTEGER NOT NULL DEFAULT 1,
+      default_ttl INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL)`,
+    `CREATE TABLE inboxes (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, provider TEXT NOT NULL, address TEXT NOT NULL,
+      password TEXT NOT NULL, account_id TEXT, token TEXT, expires_at INTEGER, received INTEGER NOT NULL DEFAULT 0,
+      fail_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`,
+    `CREATE TABLE seen (inbox_id INTEGER NOT NULL, msg_id TEXT NOT NULL, PRIMARY KEY (inbox_id, msg_id))`,
+  ], 'write');
+  v1.close();
+}
+
 const store = await import('../src/db.js');
 const { createBot } = await import('../src/bot.js');
 const { handleInbound, setInboundHandler } = await import('../src/inbound.js');

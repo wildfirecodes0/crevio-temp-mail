@@ -139,7 +139,7 @@ export async function createInbox(user, opts = {}) {
       errors.push(reason(c.provider, e));
     }
   }
-  const err = new UserFacingError(errors.some((x) => /429/.test(x)) ? 'slow' : 'down');
+  const err = new UserFacingError(errors.length && errors.every((x) => /429/.test(x)) ? 'slow' : 'down');
   err.code = errors.join(' · ');
   throw err;
 }
