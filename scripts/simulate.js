@@ -1,5 +1,6 @@
 // End-to-end simulation: drives the real bot with fake Telegram updates (Telegram API calls are intercepted)
-// against the real mail providers, plus a custom-domain inbound delivery. Usage: node scripts/simulate.js
+// against the real mail providers, plus custom-domain inbound mail and relay/direct sending via a fake worker.
+// Usage: node scripts/simulate.js
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -28,15 +29,16 @@ const calls = [];
 bot.api.config.use(async (prev, method, payload) => {
   calls.push({ method, payload });
   const text = payload.text ?? payload.caption ?? '';
-  assert.ok(text.length <= 4096, `${method} text too long (${text.length})`);
+  const limit = method === 'sendPhoto' ? 1024 : 4096;
+  assert.ok(text.length <= limit, `${method} text too long (${text.length})`);
+  for (const row of payload.reply_markup?.keyboard ?? []) for (const b of row) assert.ok(String(b.text).trim(), 'empty key');
   for (const row of payload.reply_markup?.inline_keyboard ?? []) {
-    for (const b of row) {
-      assert.ok(String(b.text).trim(), 'empty button text');
-      if (b.callback_data) assert.ok(Buffer.byteLength(b.callback_data) <= 64, `callback too long: ${b.callback_data}`);
-    }
+    for (const b of row) if (b.callback_data) assert.ok(Buffer.byteLength(b.callback_data) <= 64, `callback too long: ${b.callback_data}`);
   }
   const ok = (result) => ({ ok: true, result });
-  if (method === 'sendMessage' || method === 'sendDocument') return ok({ message_id: ++mid, date: 0, chat: { id: payload.chat_id, type: 'private' }, text });
+  const msg = { message_id: ++mid, date: 0, chat: { id: payload.chat_id, type: 'private' }, text };
+  if (method === 'sendPhoto') return ok({ ...msg, photo: [{ file_id: `photo${mid}`, file_unique_id: 'u', width: 1200, height: 630 }] });
+  if (method === 'sendMessage' || method === 'sendDocument') return ok(msg);
   if (method === 'getFile') return ok({ file_id: 'x', file_unique_id: 'x', file_path: 'x' });
   return ok(true);
 });
@@ -50,117 +52,154 @@ bot.catch((e) => {
   console.error('BOT ERROR', e.error);
 });
 
-const lastPanel = () => [...calls].reverse().find((c) => c.method === 'sendMessage' || c.method === 'editMessageText');
+const panel = () => [...calls].reverse().find((c) => ['sendMessage', 'sendPhoto'].includes(c.method) && c.payload.reply_markup?.keyboard);
 async function say(text) {
   calls.length = 0;
   const entities = text.startsWith('/') ? [{ type: 'bot_command', offset: 0, length: text.split(' ')[0].length }] : undefined;
   await bot.handleUpdate({ update_id: ++uid, message: { message_id: ++mid, date: 0, chat, from: user, text, entities } });
-  return lastPanel()?.payload;
+  const p = panel();
+  return p ? { ...p.payload, text: p.payload.text ?? p.payload.caption, photo: p.method === 'sendPhoto' } : null;
 }
-async function tap(data) {
+async function callback(data) {
   calls.length = 0;
-  await bot.handleUpdate({
-    update_id: ++uid,
-    callback_query: { id: String(uid), from: user, chat_instance: 'x', data, message: { message_id: store.getUser(user.id)?.panel_msg ?? 1, date: 0, chat, text: '…' } },
-  });
-  return lastPanel()?.payload;
+  await bot.handleUpdate({ update_id: ++uid, callback_query: { id: String(uid), from: user, chat_instance: 'x', data, message: { message_id: 5, date: 0, chat, text: '…' } } });
+  const p = panel();
+  return p ? { ...p.payload, text: p.payload.text ?? p.payload.caption } : null;
 }
-const buttons = (p) => (p?.reply_markup?.inline_keyboard ?? []).flat();
-const find = (p, re) => buttons(p).find((b) => re.test(b.text) || re.test(b.callback_data || ''));
-const step = (name, p) => console.log(`✓ ${name.padEnd(28)} ${(p?.text || '').split('\n')[0].replace(/<[^>]+>/g, '').slice(0, 60)}`);
+const keys = (p) => (p?.reply_markup?.keyboard ?? []).flat().map((b) => b.text);
+const key = (p, re) => {
+  const k = keys(p).find((t) => re.test(t));
+  assert.ok(k, `no key matching ${re} in [${keys(p).join(' | ')}]`);
+  return k;
+};
+const step = (name, p) => console.log(`✓ ${name.padEnd(30)} ${(p?.text || '').split('\n')[0].replace(/<[^>]+>/g, '').slice(0, 56)}${p?.photo ? '  🖼' : ''}`);
 
 // ── flows ─────────────────────────────────────────────────────────────────
 const t0 = Date.now();
 let p = await say('/start');
-assert.ok(calls.some((c) => c.payload.reply_markup?.keyboard), 'reply keyboard sent');
-step('/start → welcome', p);
+assert.ok(p.photo, 'welcome is a photo card');
+assert.ok(!calls.some((c) => c.payload.reply_markup?.inline_keyboard), 'no inline keyboards on screens');
+step('/start → welcome card', p);
 
 const domains = await publicDomains();
 const byProvider = Object.groupBy(domains, (d) => d.provider);
 console.log(`  domains: ${domains.length} → ${Object.entries(byProvider).map(([k, v]) => `${k}:${v.length}`).join(' ')}`);
-assert.ok(domains.length >= 5, 'expected several public domains');
 
-p = await say('✨ New Mail');
-step('menu: New Mail → picker', p);
-assert.ok(find(p, /^nr:/), 'domain buttons');
-p = await tap('np:1');
-step('picker page 2', p);
+p = await say(key(p, /Choose domain/));
+step('Choose domain → picker', p);
+assert.ok(keys(p).filter((k) => k.startsWith('@')).length >= 5);
 
-// one address per provider
 const created = [];
 for (const [pid, list] of Object.entries(byProvider)) {
-  const d = list[0];
+  p = await say('✨ New Mail');
   const t = Date.now();
-  p = await tap(`nr:${pid}:${d.domain}`);
-  const ok = /address ready/.test(p?.text || '');
-  console.log(`${ok ? '✓' : '✗'} create on ${pid.padEnd(4)} @${d.domain.padEnd(22)} ${Date.now() - t}ms ${ok ? '' : p?.text?.slice(0, 80)}`);
+  p = await say(key(p, new RegExp(`^@${list[0].domain.replace(/\./g, '\\.')}$`)));
+  const ok = /live/.test(p?.text || '') && p.photo;
+  console.log(`${ok ? '✓' : '✗'} create on ${pid.padEnd(4)} @${list[0].domain.padEnd(22)} ${Date.now() - t}ms${ok ? '  🖼' : ` ${p?.text?.slice(0, 80)}`}`);
   if (ok) created.push(store.getActiveInbox(store.getUser(user.id)));
 }
 assert.ok(created.length >= 2, 'at least two providers should work');
 
 for (const ib of created) {
+  store.setUser(user.id, { active_inbox: ib.id });
   const t = Date.now();
-  p = await tap(`inb:${ib.id}:0:r`);
-  console.log(`✓ inbox ${ib.provider.padEnd(4)} ${String(Date.now() - t).padStart(5)}ms  ${p.text.split('\n')[1]?.replace(/<[^>]+>/g, '') || ''}`);
+  p = await say('📥 Inbox');
+  console.log(`✓ inbox ${ib.provider.padEnd(4)} ${String(Date.now() - t).padStart(5)}ms  ${p.text.split('\n')[0].replace(/<[^>]+>/g, '')}`);
 }
 
-p = await tap('nc');
+p = await say('✨ New Mail');
+p = await say('✍️ Custom name');
 step('custom name prompt', p);
 p = await say('My.Shop 1');
 step('custom name → picker', p);
 assert.match(p.text, /my-shop-1@/);
-p = await tap('home');
-step('home dashboard', p);
+p = await say('✖ Cancel');
+step('cancel → home', p);
+assert.ok(keys(p).some((k) => k.startsWith('📥 Inbox')));
 
 p = await say('👤 Profile');
-step('menu: Profile', p);
-assert.match(p.text, /User ID/);
-assert.match(p.text, /Generated\s+<b>\d+/);
+assert.ok(p.photo, 'profile is a photo card');
+step('Profile card', p);
 
 p = await say('🗂 Addresses');
-step('menu: Addresses', p);
-p = await tap(`sw:${created[0].id}`);
+step('Addresses', p);
+p = await say(key(p, /^○ /));
 step('switch address', p);
-p = await tap('tmr');
-step('timer', p);
-p = await tap(`tm:${created[0].id}:600`);
+p = await say('💣 Timer');
+step('Timer', p);
+p = await say(key(p, /10 min/));
+assert.match(p.text, /Self-destructs in/);
 step('timer armed', p);
 p = await say('⚙️ Settings');
-step('menu: Settings', p);
-p = await tap('set:t');
-p = await tap('set:n');
+p = await say(key(p, /Notifications/));
+assert.ok(keys(p).some((k) => /OFF/.test(k)));
+p = await say(key(p, /Notifications/));
+p = await say(key(p, /Default timer/));
 step('settings toggled', p);
-p = await tap('set:n');
 
 p = await say('✉️ Compose');
-step('compose without domain', p);
-assert.match(p.text, /own domain/);
+step('compose (no relay yet)', p);
+assert.match(p.text, /isn’t switched on/);
 
-// ── custom domain: add, force-verify, inbound mail, compose ──────────────
+// ── custom domain as admin → share → becomes relay ───────────────────────
 p = await say('🌐 Domains');
-step('menu: Domains', p);
-p = await tap('dom:add');
-step('add domain prompt', p);
+step('Domains', p);
+p = await say('➕ Add my domain');
 p = await say('https://Mail.Crevio-Test.dev/');
-step('domain added (unverified)', p);
+step('domain added', p);
 const dom = store.findDomain('mail.crevio-test.dev');
-assert.ok(dom && !dom.verified);
-store.setDomain(dom.id, { verified: 1 }); // pretend the TXT record is in place
+store.setDomain(dom.id, { verified: 1 }); // pretend the TXT record exists
 
-p = await tap(`ncx:${dom.id}`);
+const worker = http
+  .createServer(async (req, res) => {
+    let body = '';
+    for await (const c of req) body += c;
+    if (req.headers['x-crevio-key'] !== dom.key) return res.writeHead(403).end();
+    if (req.url === '/ping') return res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true,"canSend":true}');
+    worker.last = JSON.parse(body);
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true,"id":"m1"}');
+  })
+  .listen(0);
+p = await say('🌐 Domains');
+p = await say(key(p, /mail\.crevio-test\.dev/));
+p = await say(key(p, /worker URL/));
+calls.length = 0;
+const fakeWorkerUrl = `http://127.0.0.1:${worker.address().port}`;
+// the bot requires https for user input; set directly as if pinged
+store.setDomain(dom.id, { worker_url: fakeWorkerUrl, can_send: 1 });
+p = await say('✖ Cancel');
+step('domain manage', p);
+p = await say(key(p, /Share with everyone/));
+assert.match(p.text, /send relay/);
+step('shared → relay', p);
+
+// relay send from a public temp address
+store.setUser(user.id, { active_inbox: created[0].id });
+p = await say('✉️ Compose');
+step('compose via relay', p);
+assert.match(p.text, /Replies/);
+p = await say('friend@example.com');
+p = await say('⏭ No subject');
+p = await say('Hello from a temp address');
+step('preview', p);
+p = await say('🚀 Send now');
+step('sent', p);
+const local = created[0].address.split('@')[0];
+assert.equal(worker.last.from.email, `${local}@mail.crevio-test.dev`);
+assert.equal(worker.last.replyTo.email, created[0].address);
+console.log(`  relay: From ${worker.last.from.email}  Reply-To ${worker.last.replyTo.email}`);
+
+// own-domain address + inbound mail
+p = await say('🌐 Domains');
+p = await say(key(p, /mail\.crevio-test\.dev/));
+p = await say('✨ Address on this domain');
 p = await say('hello');
 step('own-domain address', p);
 const ownIb = store.findInboxByAddress('hello@mail.crevio-test.dev');
-assert.ok(ownIb, 'own inbox created');
+assert.ok(ownIb);
 
-// inbound delivery through the real HTTP handler
-let pushed = 0;
-setInboundHandler(async (ib, id) => {
-  pushed++;
-  await pushMail(bot, ib, id);
-});
+setInboundHandler((ib, id) => pushMail(bot, ib, id));
 const server = http.createServer((req, res) => handleInbound(req, res)).listen(0);
-const port = server.address().port;
 const raw = [
   'From: "GitHub" <noreply@github.com>',
   'To: hello@mail.crevio-test.dev',
@@ -179,76 +218,52 @@ const raw = [
   '--XX--',
   '',
 ].join('\r\n');
-const post = (key, to = 'hello@mail.crevio-test.dev') =>
-  fetch(`http://127.0.0.1:${port}/inbound`, { method: 'POST', headers: { 'X-Crevio-Key': key, 'X-Crevio-To': to }, body: raw });
+const post = (k, to = 'hello@mail.crevio-test.dev') =>
+  fetch(`http://127.0.0.1:${server.address().port}/inbound`, { method: 'POST', headers: { 'X-Crevio-Key': k, 'X-Crevio-To': to }, body: raw });
 assert.equal((await post('wrong')).status, 403);
 assert.equal((await post(dom.key, 'nobody@mail.crevio-test.dev')).status, 404);
 calls.length = 0;
 assert.equal((await post(dom.key)).status, 200);
 await new Promise((r) => setTimeout(r, 300));
 const note = calls.find((c) => c.method === 'sendMessage' && /New mail/.test(c.payload.text));
-assert.ok(note, 'push notification sent');
-assert.ok(find(note.payload, /482913/), 'OTP copy button in push');
-console.log('✓ inbound mail → push with OTP button');
+assert.ok(note?.payload.reply_markup.inline_keyboard.flat().some((b) => b.copy_text?.text === '482913'), 'push has OTP copy');
+console.log('✓ inbound mail → push (inline copy + open)');
 
-p = await tap(`inb:${ownIb.id}:0`);
-step('own inbox lists mail', p);
-const open = find(p, /^msg:/);
-p = await tap(open.callback_data);
-step('open mail', p);
-assert.ok(find(p, /Verify/), 'verify link button');
-assert.ok(find(p, /Attachments/), 'attachments button');
-p = await tap(find(p, /Attachments/).callback_data);
-p = await tap(find(p, /^atd:/).callback_data);
+p = await callback(note.payload.reply_markup.inline_keyboard.flat().find((b) => b.callback_data).callback_data);
+step('push → Open mail', p);
+assert.match(p.text, /482913/);
+assert.match(p.text, /href="https:\/\/github.com\/verify/);
+assert.ok(keys(p).includes('🖥 Open full email'));
+p = await say(key(p, /Attachments/));
+p = await say(key(p, /note\.txt/));
 assert.ok(calls.some((c) => c.method === 'sendDocument'), 'attachment delivered');
 console.log('✓ attachment download');
-
-// sending: fake worker
-const worker = http
-  .createServer(async (req, res) => {
-    const body = await new Promise((r) => {
-      let s = '';
-      req.on('data', (c) => (s += c));
-      req.on('end', () => r(s));
-    });
-    if (req.headers['x-crevio-key'] !== dom.key) return res.writeHead(403).end();
-    if (req.url === '/ping') return res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true,"canSend":true}');
-    worker.last = JSON.parse(body);
-    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true,"id":"m1"}');
-  })
-  .listen(0);
-store.setDomain(dom.id, { worker_url: `http://127.0.0.1:${worker.address().port}`, can_send: 1 });
-
-p = await say('✉️ Compose');
-step('compose from own domain', p);
-p = await say('friend@example.com');
-p = await say('Hi there');
-p = await say('Line one\n\nLine two');
-step('compose preview', p);
-assert.match(p.text, /Ready to send/);
-p = await tap('cmgo');
-step('sent', p);
-assert.equal(worker.last?.from?.email, 'hello@mail.crevio-test.dev');
-assert.equal(worker.last?.to, 'friend@example.com');
-
-p = await tap(`inb:${ownIb.id}:0`);
-p = await tap(find(p, /^msg:/).callback_data);
-p = await tap(find(p, /Reply/).callback_data);
+p = await say('‹ Back to mail');
+p = await say('↩️ Reply');
 step('reply prefilled', p);
-assert.match(p.text, /noreply@github.com/);
-await tap('cmx');
+p = await say('Thanks!');
+p = await say('🚀 Send now');
+assert.equal(worker.last.from.email, 'hello@mail.crevio-test.dev');
+assert.equal(worker.last.replyTo, undefined);
+console.log(`  direct: From ${worker.last.from.email} → ${worker.last.to}`);
+
+p = await say('📥 Inbox');
+p = await say(key(p, /GitHub/));
+p = await say('🗑 Delete mail');
+assert.match(p.text, /nothing here yet/);
+step('delete mail', p);
 
 p = await say('👤 Profile');
-assert.match(p.text, /Sent\s+<b>1<\/b>/);
-assert.match(p.text, /Received\s+<b>1<\/b>/);
-step('profile counters', p);
+assert.match(p.text, /Sent today <b>2/);
+step('profile after sends', p);
 
 p = await say('/stats');
-step('/stats (admin)', p);
+p = await say('random text');
+step('unknown text → home', p);
 
-// cleanup: delete everything (also removes provider accounts)
-p = await tap('wipe');
-p = await tap('wipey');
+p = await say('⚙️ Settings');
+p = await say('🧨 Erase all my data');
+p = await say('🧨 Yes, erase everything');
 step('wipe all', p);
 server.close();
 worker.close();

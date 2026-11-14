@@ -5,11 +5,13 @@ import { migrate } from './db.js';
 import { createBot, COMMANDS } from './bot.js';
 import { startPoller, pushMail } from './poller.js';
 import { handleInbound, setInboundHandler } from './inbound.js';
-import { warmDomains } from './providers/index.js';
+import { warmDomains, publicDomains } from './providers/index.js';
+import { warmCards } from './cards.js';
 import { handleViewer } from './viewer.js';
 
 await migrate();
 warmDomains();
+publicDomains().then((d) => warmCards(d.length)).catch(() => {});
 const bot = createBot();
 await bot.init();
 console.log(`✦ Crevio up as @${bot.botInfo.username}`);

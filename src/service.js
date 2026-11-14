@@ -131,8 +131,28 @@ export async function destroyInbox(ib, { reason = 'deleted' } = {}) {
   }
 }
 
-export const canSendFrom = (ib) => {
-  if (!ib || ib.provider !== 'own') return false;
-  const d = store.findDomain(ib.address.split('@')[1]);
-  return Boolean(d?.verified && d.worker_url && d.can_send);
-};
+const sendReady = (d) => Boolean(d?.verified && d.worker_url && d.can_send);
+
+/** Shared domain that sends on behalf of addresses that can't send themselves (admin-shared 💎 domain). */
+export function relayDomain() {
+  const all = store.allDomains().filter((d) => d.public && sendReady(d));
+  return all.find((d) => d.domain === config.relayDomain) || all[0] || null;
+}
+
+/**
+ * How mail from this address goes out:
+ *  direct → the address is on a custom domain with a working worker (From: the address itself)
+ *  relay  → any other address; sent as local@relay-domain with Reply-To set to the address,
+ *           so replies land back in the user's temp inbox
+ */
+export function sendRoute(ib) {
+  if (!ib) return null;
+  if (ib.provider === 'own') {
+    const d = store.findDomain(ib.address.split('@')[1]);
+    if (sendReady(d)) return { mode: 'direct', domain: d };
+  }
+  const relay = relayDomain();
+  return relay ? { mode: 'relay', domain: relay } : null;
+}
+
+export const canSendFrom = (ib) => Boolean(sendRoute(ib));

@@ -1,13 +1,24 @@
-// Outbound mail through the domain owner's own Cloudflare Worker (no third-party ESP).
+// Outbound mail through a Cloudflare Worker (no third-party ESP).
+//  direct: from the user's own custom-domain address
+//  relay:  any other address → sent as local@<shared relay domain>, Reply-To = the user's address
 import { config } from './config.js';
 import * as store from './db.js';
 import { request } from './providers/http.js';
 import { esc } from './utils.js';
-import { UserFacingError } from './service.js';
+import { UserFacingError, sendRoute } from './service.js';
 
 export function sendLimitFor(user, ib) {
-  const d = store.findDomain(ib.address.split('@')[1]);
-  return d && Number(d.owner_id) === Number(user.id) ? config.sendLimitOwn : config.sendLimitShared;
+  const route = sendRoute(ib);
+  if (route?.mode === 'direct' && Number(route.domain.owner_id) === Number(user.id)) return config.sendLimitOwn;
+  return config.sendLimitShared;
+}
+
+/** Sender identity shown to recipients. */
+export function senderFor(ib, route = sendRoute(ib)) {
+  if (!route) return null;
+  if (route.mode === 'direct') return { email: ib.address, replyTo: null };
+  const local = ib.address.split('@')[0].replace(/[^a-z0-9._-]/gi, '').slice(0, 40) || 'crevio';
+  return { email: `${local}@${route.domain.domain}`, replyTo: ib.address };
 }
 
 const textToHtml = (t) =>
@@ -18,29 +29,33 @@ const textToHtml = (t) =>
 
 /**
  * @param {object} user
- * @param {object} ib  sending inbox (custom domain)
+ * @param {object} ib  the user's address the mail is "from"
  * @param {{to:string, subject:string, text:string, inReplyTo?:string, attachments?:{filename:string,type:string,content:string}[]}} draft
  */
 export async function sendMail(user, ib, draft) {
-  const d = store.findDomain(ib.address.split('@')[1]);
-  if (!d?.verified || !d.worker_url) throw new UserFacingError('nosend');
+  const route = sendRoute(ib);
+  if (!route) throw new UserFacingError('nosend');
   if (user.banned) throw new UserFacingError('banned');
 
   const limit = sendLimitFor(user, ib);
   if (limit && (await store.sentLast24h(user.id)) >= limit) throw new UserFacingError('sendlimit');
 
+  const sender = senderFor(ib, route);
+  const name = (user.first_name || ib.address.split('@')[0]).slice(0, 60);
   const payload = {
-    from: { email: ib.address, name: user.first_name || ib.address.split('@')[0] },
-    to: draft.to,
+    from: { email: sender.email, name },
+    to: draft.to.split(/,\s*/),
     subject: draft.subject || '(no subject)',
     text: draft.text,
     html: textToHtml(draft.text),
+    ...(sender.replyTo ? { replyTo: { email: sender.replyTo, name } } : {}),
     ...(draft.inReplyTo ? { headers: { 'In-Reply-To': draft.inReplyTo, References: draft.inReplyTo } } : {}),
     ...(draft.attachments?.length
       ? { attachments: draft.attachments.map((a) => ({ content: a.content, filename: a.filename, type: a.type, disposition: 'attachment' })) }
       : {}),
   };
 
+  const d = route.domain;
   let r;
   try {
     r = await request(`${d.worker_url.replace(/\/+$/, '')}/send`, {

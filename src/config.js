@@ -41,6 +41,7 @@ export const config = {
   sendLimitOwn: Number(env.SEND_LIMIT_OWN) || 0,
   sendLimitShared: env.SEND_LIMIT_SHARED === undefined ? 50 : Number(env.SEND_LIMIT_SHARED) || 0,
   allowUserDomains: env.ALLOW_USER_DOMAINS !== '0',
+  relayDomain: (env.SEND_RELAY_DOMAIN || '').toLowerCase(),
   inboundMaxBytes: (Number(env.INBOUND_MAX_MB) || 15) * 1024 * 1024,
   verifyToken: (domain) => `crevio-verify=${derive(`verify:${domain}`).slice(0, 32)}`,
 };

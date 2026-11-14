@@ -6,12 +6,13 @@ A disposable-email bot with a UI built around how people actually use temp mail:
 
 | | |
 |---|---|
-| **⌨️ Keyboard menu** | A persistent bottom menu: Inbox · New Mail · Addresses · Compose · Domains · Profile · Settings · Help. |
-| **One living panel** | Taps edit a single message in place. Menu taps replace the old panel, so the chat never fills up. |
+| **⌨️ Keyboard-first UI** | All navigation uses the bottom keyboard. Every screen brings its own keys (domains, mails, timer options, settings…). Inline buttons appear only on new-mail alerts (⧉ copy code · 📖 open). |
+| **🖼 Image cards** | Rendered welcome, new-address and profile cards (satori + resvg), including Hindi names. |
+| **Clean chat** | Your taps and typed input are removed, and each screen replaces the previous one, so the chat never fills up. |
 | **⚡ Fast** | Every tap is acknowledged instantly. Users, addresses and domains are served from memory, inbox lists are cached, and slow work shows a loading frame and then fills in. |
 | **🌐 18+ domains** | mail.tm, temp-mail.io and Guerrilla Mail domains, all pickable (plus mail.gw when it's up). |
 | **🏷 Bring your own domain** | Any user can add their domain and receive mail on *anything*@theirdomain through Cloudflare Email Routing (free). |
-| **✉️ Send mail** | Compose, reply and attach files from a custom-domain address. Mail goes out through the domain owner's own Cloudflare Worker, with no SendGrid/Mailgun-style middleman. |
+| **✉️ Send mail from any address** | Compose, reply and attach files. Addresses on a custom domain send directly. Every other address (mail.tm, guerrilla…) sends through the admin's **relay domain** as `name@relay-domain` with **Reply-To** set to the temp address, so replies land back in the same inbox. No SendGrid/Mailgun middleman. |
 | **👤 Profile** | Name, username, Telegram ID, language, join date, generated / disposed / live / received / sent counts, domains and preferences. |
 | **🔑 OTP detection** | Codes like `482913`, `731-204` and `K7Q2ZP` get a native ⧉ copy button. Verify, sign-in and reset links become buttons. |
 | **🛰 Live push** | New mail shows up as a compact alert. Custom-domain mail is pushed the instant it arrives. |
@@ -32,6 +33,12 @@ A disposable-email bot with a UI built around how people actually use temp mail:
 4. Deploy. The webhook, commands and Mini App viewer are configured automatically from `RENDER_EXTERNAL_URL`.
 
 > On the Render free plan the service sleeps after about 15 min without traffic. The bot pings its own `/health` every 10 min so live push keeps working.
+
+## Turning on sending for everyone (one-time, admin)
+
+1. Add your domain in 🌐 Domains and finish all steps, including **step 6** (Email Service sending + `send_email` binding).
+2. Open it and tap **💎 Share with everyone**. It becomes the **send relay**, and every user can now ✉️ Compose from any of their addresses.
+3. Optional: `SEND_RELAY_DOMAIN=yourdomain.com` picks which shared domain is the relay if you have several. `/stats` shows the current relay.
 
 ## Custom domains (receive + send)
 
@@ -64,7 +71,8 @@ The worker forwards each incoming mail to `POST /inbound` on the bot, signed wit
 | `MAIL_PROVIDERS` | `tm,gw,tio,gm` | mail.tm, mail.gw, temp-mail.io, guerrillamail |
 | `ALLOW_USER_DOMAINS` | `1` | `0` = only admins add domains |
 | `SEND_LIMIT_OWN` | `0` | daily sends on the user's own domain (0 = unlimited) |
-| `SEND_LIMIT_SHARED` | `50` | daily sends on shared domains |
+| `SEND_LIMIT_SHARED` | `50` | daily sends per user through the relay / shared domains (0 = unlimited) |
+| `SEND_RELAY_DOMAIN` | first shared sending domain | which domain relays mail for temp addresses |
 | `INBOUND_MAX_MB` | `15` | max inbound mail size |
 | `PUBLIC_URL` | `RENDER_EXTERNAL_URL` | https URL → webhook mode |
 | `KEEP_ALIVE` | on when on Render | self-ping |
@@ -82,8 +90,10 @@ npm run simulate     # end-to-end: fake Telegram, real providers, custom-domain 
 ```
 src/
   index.js        http server: webhook, /inbound, /v/ viewer, /health
-  bot.js          menu, commands, every button & conversation flow
-  ui.js           every screen (text + keyboard)
+  bot.js          every screen + its keyboard, commands, conversation flows
+  router.js       reply-keyboard screen router (one panel per chat)
+  ui.js           screen text, push notification (inline copy/open)
+  cards.js        hero image cards (welcome, address, profile)
   service.js      inbox ops + caches
   poller.js       live push + self-destruct sweeper
   inbound.js      custom-domain mail receiver (MIME → Turso → push)
