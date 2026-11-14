@@ -79,7 +79,7 @@ bot.catch((e) => {
 const PANEL_METHODS = ['sendMessage', 'sendPhoto', 'editMessageText', 'editMessageMedia'];
 let cur = null; // current panel
 function track() {
-  const c = [...calls].reverse().find((x) => PANEL_METHODS.includes(x.method) && x.payload.reply_markup?.inline_keyboard && !/^🛰/.test(x.payload.text || ''));
+  const c = [...calls].reverse().find((x) => PANEL_METHODS.includes(x.method) && x.payload.reply_markup?.inline_keyboard && !/^<b>🛰 New mail/.test(x.payload.text || ''));
   if (!c) return cur;
   cur = {
     text: c.payload.text ?? c.payload.caption ?? c.payload.media?.caption,
@@ -203,7 +203,7 @@ step('Home dashboard', p);
 p = await tap(/Timer/);
 step('timer', p);
 p = await tap(/10 min/);
-assert.match(p.text, /Self-destructs in/);
+assert.match(p.text, /self-destructs in/i);
 step('timer armed', p);
 
 p = await say('👤 Profile');
@@ -226,7 +226,7 @@ p = await tap(/^« 1 »$/);
 assert.match(p.text, /Address 1 of/);
 step('address detail', p);
 p = await tap(/Make active/);
-assert.match(p.text, /● <b>active<\/b>/);
+assert.match(p.text, /● active/);
 step('make active', p);
 p = await tap(/Timer/);
 p = await tap(/1 hour/);
@@ -289,7 +289,7 @@ assert.equal(worker.last.replyTo.email, created[0].address);
 console.log(`  relay: From ${worker.last.from.email}  Reply-To ${worker.last.replyTo.email}`);
 
 p = await say('🌐 Domains');
-p = await tap(/mail\.crevio-test\.dev/);
+p = await tap(/^« 1 »$/);
 p = await tap(/Create address here/);
 p = await say('hello');
 step('own-domain address', p);
@@ -323,7 +323,7 @@ assert.equal((await post(dom.key, 'nobody@mail.crevio-test.dev')).status, 404);
 calls.length = 0;
 assert.equal((await post(dom.key)).status, 200);
 await new Promise((r) => setTimeout(r, 300));
-const note = calls.find((c) => c.method === 'sendMessage' && /^🛰 <b>New mail/.test(c.payload.text));
+const note = calls.find((c) => c.method === 'sendMessage' && /^<b>🛰 New mail/.test(c.payload.text));
 assert.ok(note?.payload.reply_markup.inline_keyboard.flat().some((b) => b.copy_text?.text === '482913'), 'push has OTP copy');
 console.log('✓ inbound mail → push (copy + open)');
 
@@ -333,7 +333,7 @@ assert.ok(find(/Copy 482913/).copy_text);
 assert.ok(find(/Verify/).url);
 assert.ok(find(/Open full email/).web_app);
 p = await tap(/Files/);
-p = await tap(/note\.txt/);
+p = await tap(/^« 1 »$/);
 assert.ok(calls.some((c) => c.method === 'sendDocument'), 'attachment delivered');
 console.log('✓ attachment download');
 p = await tap(/Back to mail/);
@@ -345,13 +345,13 @@ assert.equal(worker.last.from.email, 'hello@mail.crevio-test.dev');
 console.log(`  direct: From ${worker.last.from.email} → ${worker.last.to}`);
 
 p = await say('📥 Inbox');
-p = await tap(/GitHub/);
+p = await tap(/^« 1 »$/);
 p = await tap(/Delete/);
-assert.match(p.text, /nothing here yet/);
+assert.match(p.text, /No mail yet/);
 step('delete mail', p);
 
 p = await say('👤 Profile');
-assert.match(p.text, /Sent today <b>2/);
+assert.match(p.text, /Sent today<\/b>\s+<b>2/);
 step('profile after sends', p);
 
 p = await callback('t:zzzz');

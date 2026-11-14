@@ -1,5 +1,9 @@
-// Text for every screen (Telegram HTML). Navigation lives in the bottom keyboard (see screens in bot.js);
-// inline buttons are used only on push notifications, where one-tap copy/open matters most.
+// Text for every screen (Telegram HTML), built from one small design system:
+//   head()  → bold title · italic meta, then a rule
+//   card()  → a quoted block for the thing that matters (address, code, sender)
+//   tree()  → "├ emoji Label  value" rows, last one "└"
+//   list    → "<b>N.</b> marker item ~ <b>age</b>" with « N » buttons underneath (built in bot.js)
+//   hint()  → a closing italic line telling the user what to do next
 import { InlineKeyboard } from 'grammy';
 import { config } from './config.js';
 import { esc, truncate, ago, shortDur, fmtSize, fmtDate } from './utils.js';
@@ -7,9 +11,19 @@ import { providerLabel } from './providers/index.js';
 import { txtHost } from './domains.js';
 
 export const BRAND = 'Crevio Mail Bot';
-export const H = (sub) => `✦ <b>𝗖𝗥𝗘𝗩𝗜𝗢 𝗠𝗔𝗜𝗟</b>${sub ? `  ·  <i>${sub}</i>` : ''}`;
+export const RULE = '────────────────────────';
+export const PAGE = 10; // items per list page (inbox, addresses)
+
+const head = (title, meta) => `<b>${title}</b>${meta ? `  ·  <i>${meta}</i>` : ''}\n${RULE}`;
 const card = (inner) => `<blockquote>${inner}</blockquote>`;
 const addr = (a) => `<code>${esc(a)}</code>`;
+const hint = (t) => `<i>${t}</i>`;
+const tree = (rows) => {
+  const r = rows.filter(Boolean);
+  return r.map(([emoji, label, value], i) => `${i === r.length - 1 ? '└' : '├'} ${emoji} <b>${label}</b>   ${value}`).join('\n');
+};
+const join = (parts) => parts.filter((p) => p !== null && p !== undefined && p !== false).join('\n');
+export const H = (sub) => head('✦ 𝗖𝗥𝗘𝗩𝗜𝗢 𝗠𝗔𝗜𝗟', sub);
 
 export const TIMERS = [
   [600, '10 min'],
@@ -19,393 +33,419 @@ export const TIMERS = [
   [0, 'Never'],
 ];
 export const ttlLabel = (sec) => TIMERS.find(([s]) => s === Number(sec))?.[1] ?? 'Never';
-
-export function timerLine(ib) {
-  if (!ib.expires_at) return '♾ No timer, lives until you delete it';
-  const left = (Number(ib.expires_at) - Date.now()) / 1000;
-  return left > 0 ? `💣 Self-destructs in <b>${shortDur(left)}</b>` : '💣 Self-destructing…';
-}
-export const timerShort = (ib) =>
-  ib.expires_at ? `Expires in ${shortDur(Math.max(0, (Number(ib.expires_at) - Date.now()) / 1000))}` : 'No timer';
+const leftOf = (ib) => Math.max(0, (Number(ib.expires_at) - Date.now()) / 1000);
+const timerValue = (ib) => (ib.expires_at ? `self-destructs in <b>${shortDur(leftOf(ib))}</b>` : 'none, lives until deleted');
+export const timerShort = (ib) => (ib.expires_at ? `Expires in ${shortDur(leftOf(ib))}` : 'No timer');
 
 const senderName = (from) => esc(truncate(from?.name || from?.address?.split('@')[0] || 'Unknown', 28));
 const sourceLabel = (ib) => (ib.provider === 'own' ? 'custom domain' : providerLabel(ib.provider));
+const sendingValue = (route) => (route ? (route.mode === 'direct' ? 'sends directly' : 'via Crevio relay') : 'receive only');
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 // ── home ─────────────────────────────────────────────────────────────────
 export function welcome(firstName, domainCount) {
-  return [
-    `<b>Hey ${esc(firstName || 'there')} 👋  Welcome to ${BRAND}.</b>`,
-    '',
+  return join([
+    head(`👋 Hey ${esc(firstName || 'there')}, welcome to ${BRAND}`),
     'Burner inboxes in one tap. Sign up anywhere and keep your real email clean.',
     '',
-    `⚡ ${domainCount}+ domains   🔑 OTP copy   🛰 live push`,
-    '✉️ send mail   🏷 your own domain   💣 self-destruct',
+    tree([
+      ['⚡', 'Instant', `${domainCount}+ domains to choose from`],
+      ['🔑', 'Smart', 'OTP codes detected, one-tap copy'],
+      ['🛰', 'Live', 'new mail pushed to this chat'],
+      ['✉️', 'Send', 'compose & reply from any address'],
+      ['🏷', 'Your domain', 'receive on anything@yourdomain'],
+      ['💣', 'Self-destruct', 'timers that wipe an address'],
+    ]),
     '',
-    '<i>Tap ⚡ Instant address to get your first inbox.</i>',
-  ].join('\n');
+    hint('Tap ⚡ Instant address to get your first inbox.'),
+  ]);
 }
 
 export function dashboard(ib, { total, unread, index, count, route }) {
-  const mail =
-    total === null ? '📡 <i>syncing…</i>' : total ? `📬 <b>${total}</b> mail${total === 1 ? '' : 's'}${unread ? `  ·  <b>${unread} new</b>` : ''}` : '📭 No mail yet';
-  return [
+  const mails = total === null ? '<i>syncing…</i>' : total ? `<b>${total}</b>${unread ? `  ·  <b>${unread} new</b>` : ''}` : '<i>none yet</i>';
+  return join([
     H(`address ${index} of ${count}`),
-    '',
     card(`${addr(ib.address)}\n<i>tap to copy</i>`),
-    mail,
-    `🌐 ${esc(ib.address.split('@')[1])}  ·  <i>${sourceLabel(ib)}</i>`,
-    `🕓 Created ${ago(Number(ib.created_at))}`,
-    timerLine(ib),
-    route ? `✉️ Can send${route.mode === 'relay' ? '  ·  <i>via Crevio relay</i>' : ''}` : '',
-  ]
-    .filter((l) => l !== '')
-    .join('\n');
+    tree([
+      ['📬', 'Mails', mails],
+      ['🌐', 'Domain', `${esc(ib.address.split('@')[1])} · <i>${sourceLabel(ib)}</i>`],
+      ['🕓', 'Created', ago(Number(ib.created_at))],
+      ['💣', 'Timer', timerValue(ib)],
+      ['✉️', 'Sending', sendingValue(route)],
+    ]),
+  ]);
 }
 
 export function created(ib) {
-  return [
-    `✨ <b>Your new address is live</b>`,
+  return join([
+    head('✨ Address ready', 'live now'),
+    card(`${addr(ib.address)}\n<i>tap to copy</i>`),
+    tree([
+      ['🌐', 'Domain', esc(ib.address.split('@')[1])],
+      ['🛰', 'Provider', sourceLabel(ib)],
+      ['💣', 'Timer', timerValue(ib)],
+    ]),
+    ib.fallbackFrom ? `\n⚠️ <i>@${esc(ib.fallbackFrom)} wasn’t responding, so I used another domain.</i>` : null,
     '',
-    card(addr(ib.address)),
-    `🌐 <i>${sourceLabel(ib)}</i>  ·  ${timerLine(ib)}`,
-    ib.fallbackFrom ? `<i>@${esc(ib.fallbackFrom)} wasn’t responding, so I used another domain.</i>` : null,
-    '',
-    '<i>Tap the address to copy. I’ll ping you the moment mail arrives.</i>',
-  ]
-    .filter((l) => l !== null)
-    .join('\n');
+    hint('Use it anywhere. I’ll ping you the moment mail arrives.'),
+  ]);
 }
 
 export function help() {
-  return [
-    H('how it works'),
-    '',
-    '<b>1 ·</b> ✨ <b>New Mail</b> (menu below) → pick a domain, or ⚡ Instant.',
-    '<b>2 ·</b> Use the address on any site.',
-    '<b>3 ·</b> Mail arrives here instantly. Codes show up as <code>482913</code> (tap to copy), and verify links are clickable.',
+  return join([
+    head('❔ How it works'),
+    '<b>1.</b> ✨ <b>New Mail</b> → pick a domain, or ⚡ Instant',
+    '<b>2.</b> Use the address on any site',
+    '<b>3.</b> Mail arrives here instantly, with codes ready to copy',
     '',
     '<b>✉️ Sending</b>',
-    'Compose works from any of your addresses. Replies come back to the same inbox.',
+    'Compose and reply from any of your addresses. Replies come back to the same inbox.',
     '',
     '<b>🏷 Your own domain</b>',
-    '🌐 Domains → ➕ Add my domain. You can then receive on <i>anything</i>@yourdomain and send from it directly.',
+    '🌐 Domains → ➕ Add my domain. Then receive on <i>anything</i>@yourdomain and send from it directly.',
     '',
     '<b>Tips</b>',
-    `• Up to <b>${config.maxInboxes}</b> addresses; switch in 🗂 Addresses.`,
-    '• 💣 Timer wipes an address and its mail automatically.',
+    tree([
+      ['🗂', 'Addresses', `keep up to <b>${config.maxInboxes}</b>, switch anytime`],
+      ['💣', 'Timer', 'wipes an address and its mail automatically'],
+      ['🖥', 'Viewer', 'open any mail exactly as it was sent'],
+    ]),
     '',
-    '<i>Public temp domains can be read by anyone who guesses the name. Don’t use them for banking.</i>',
-  ].join('\n');
+    hint('Public temp domains can be read by anyone who guesses the name. Don’t use them for banking.'),
+  ]);
 }
 
 // ── create ───────────────────────────────────────────────────────────────
 export function picker(domains, { pendingLocal } = {}) {
   const custom = domains.filter((d) => d.kind !== 'public').length;
   if (pendingLocal) {
-    return [H('custom address'), '', card(`${addr(`${pendingLocal}@`)}<b>…</b>`), '', `Pick a domain below to finish it.  <i>${domains.length} available</i>`].join('\n');
+    return join([head('✍️ Custom address', `${domains.length} domains`), card(`${addr(`${pendingLocal}@`)}<b>…</b>`), hint('Pick a domain below to finish it.')]);
   }
-  return [
-    H('new address'),
+  return join([
+    head('✨ New address', `${domains.length} domains`),
+    tree([
+      ['⚡', 'Instant', 'random name on a random domain'],
+      ['✍️', 'Custom', 'choose the part before @'],
+      ['🎲', '@domain', 'random name on that domain'],
+    ]),
+    custom ? '\n⭐ your domain   💎 premium' : null,
     '',
-    `<b>Pick a domain below</b>  <i>${domains.length} available</i>`,
-    '',
-    '⚡ <b>Instant</b>: random name on a random domain',
-    '✍️ <b>Custom name</b>: choose the part before @',
-    '🎲 Tap any <b>@domain</b>: random name on that domain',
-    custom ? '\n⭐ your domain   💎 premium' : '',
-  ].join('\n');
+    hint('Pick a domain below.'),
+  ]);
 }
 
 export const askCustom = (domain) =>
-  [
-    H('custom address'),
-    '',
+  join([
+    head('✍️ Custom address', domain ? `@${esc(domain)}` : null),
     domain ? `Send the name you want on <b>@${esc(domain)}</b>.` : 'Send the name you want before the <b>@</b>.',
     '',
-    '<i>3–30 chars · a–z, 0–9, dash, underscore</i>',
-    'e.g. <code>shop-alerts</code>  ·  <code>neo_2077</code>',
-  ].join('\n');
+    tree([
+      ['📏', 'Length', '3–30 characters'],
+      ['🔤', 'Allowed', 'a–z, 0–9, dash, underscore'],
+      ['💡', 'Examples', '<code>shop-alerts</code> · <code>neo_2077</code>'],
+    ]),
+  ]);
 
 // ── inbox ────────────────────────────────────────────────────────────────
-export const PAGE = 8;
-
 export function inbox(ib, msgs, page, pages) {
   if (!msgs.length) {
-    return [
-      `📥 <b>Inbox</b>`,
-      card(addr(ib.address)),
+    return join([
+      head('📥 Inbox', 'empty'),
+      card(`${addr(ib.address)}\n<i>tap to copy</i>`),
       '',
-      '<code>        ·  nothing here yet  ·        </code>',
+      '📭 <b>No mail yet</b>',
+      hint('Use this address on any site. New mail lands here and I’ll ping you instantly.'),
       '',
-      '<i>Use this address anywhere. New mail is pushed here instantly.</i>',
-    ].join('\n');
+      hint(`🔄 Auto-checking every ${config.pollIntervalSec}s`),
+    ]);
   }
   const unread = msgs.filter((m) => !m.seen).length;
-  const lines = [
-    `📥 <b>Inbox</b>  ·  <i>${msgs.length} mail${msgs.length === 1 ? '' : 's'}${unread ? `, ${unread} new` : ''}${pages > 1 ? `  ·  page ${page + 1}/${pages}` : ''}</i>`,
-    card(addr(ib.address)),
-    '',
-  ];
+  const lines = [head('📥 Inbox', `${plural(msgs.length, 'mail')}${unread ? ` · ${unread} new` : ''}`), card(addr(ib.address)), ''];
   msgs.slice(page * PAGE, page * PAGE + PAGE).forEach((m, i) => {
     lines.push(
-      `<b>${page * PAGE + i + 1}.</b> ${m.seen ? '⚪' : '🔵'} <b>${senderName(m.from)}</b>  <i>${ago(m.createdAt)}</i>${m.hasAttachments ? ' 📎' : ''}`,
-      `      ${esc(truncate(m.subject || '(no subject)', 52))}`,
+      `<b>${page * PAGE + i + 1}.</b> ${m.seen ? '⚪' : '🔵'} <b>${senderName(m.from)}</b> ~ <b>${ago(m.createdAt)}</b>${m.hasAttachments ? ' 📎' : ''}`,
+      `      <i>${esc(truncate(m.subject || '(no subject)', 54))}</i>`,
+      '',
     );
   });
-  lines.push('', '<i>Tap a mail below to open it.</i>');
+  lines.push(hint(`🔵 new${pages > 1 ? `  ·  page ${page + 1} of ${pages}` : ''}  ·  tap a number to open`));
   return lines.join('\n');
 }
 
-export const inboxKey = (m, n) =>
-  `${n}. ${m.seen ? '⚪' : '🔵'} ${truncate(m.from?.name || m.from?.address?.split('@')[0] || '?', 14)} · ${truncate(m.subject || '(no subject)', 24)}`;
-
 // ── message ──────────────────────────────────────────────────────────────
-export function message(ib, msg, { body, codes, links }) {
+export function message(ib, msg, { body, codes }, { index, total, wasNew } = {}) {
   const from = msg.from || {};
-  const head = [
-    `✉️ <b>${esc(truncate(msg.subject || '(no subject)', 140))}</b>`,
-    '',
-    `👤 ${senderName(from)}  <i>${esc(from.address || '')}</i>`,
-    `📮 ${addr(ib.address)}`,
-    `🕓 ${fmtDate(msg.createdAt)}  ·  ${ago(msg.createdAt)}`,
-  ];
-  if (codes.length) head.push('', card(`🔑 <b>Code</b>   ${codes.map((c) => addr(c)).join('   ')}\n<i>tap the code to copy</i>`));
-  if (links.length) head.push(links.map((l) => `<a href="${esc(l.url).replace(/"/g, '&quot;')}">${l.label}  ›</a>`).join('    '));
   const att = msg.attachments || [];
-  const foot = att.length ? `\n📎 <i>${att.length} attachment${att.length === 1 ? '' : 's'} · ${fmtSize(att.reduce((s, a) => s + (a.size || 0), 0))}</i>` : '';
-  const headText = head.join('\n');
-  const budget = 3900 - headText.length - foot.length - 80;
+  const top = join([
+    head(`✉️ Mail${index ? ` ${index} of ${total}` : ''}`, wasNew ? '🔵 new' : '⚪ read'),
+    `<b>${esc(truncate(msg.subject || '(no subject)', 160))}</b>`,
+    '',
+    tree([
+      ['👤', 'From', senderName(from)],
+      ['📧', 'Email', esc(from.address || '—')],
+      ['📮', 'To', addr(ib.address)],
+      ['🕓', 'Received', `${fmtDate(msg.createdAt)} · ${ago(msg.createdAt)}`],
+      att.length ? ['📎', 'Files', `${att.length} · ${fmtSize(att.reduce((s, a) => s + (a.size || 0), 0))}`] : null,
+    ]),
+    codes.length ? `\n${card(`🔑 <b>Code</b>   ${codes.map(addr).join('   ')}\n<i>tap to copy</i>`)}` : null,
+    '',
+    '<b>📝 Message</b>',
+  ]);
+  const budget = 3900 - top.length - 60;
   const shown = body ? esc(truncate(body, Math.max(200, Math.floor(budget * 0.85)))) : '<i>(empty message)</i>';
-  return `${headText}\n\n<blockquote expandable>${shown}</blockquote>${foot}`;
+  return `${top}\n<blockquote expandable>${shown}</blockquote>`;
 }
 
 export const attachments = (msg, downloadable) =>
-  [
-    `📎 <b>Attachments</b>  ·  <i>${esc(truncate(msg.subject || '(no subject)', 50))}</i>`,
+  join([
+    head('📎 Files', esc(truncate(msg.subject || '(no subject)', 40))),
+    ...(msg.attachments || []).map((a, i) => `<b>${i + 1}.</b> 📄 ${esc(truncate(a.filename || 'file', 44))} ~ <b>${fmtSize(a.size)}</b>`),
     '',
-    ...(msg.attachments || []).map((a, i) => `<b>${i + 1}.</b> ${esc(truncate(a.filename || 'file', 48))}  <i>${fmtSize(a.size)}</i>`),
-    '',
-    downloadable ? '<i>Tap a file below to get it here (max 20 MB).</i>' : '<i>This provider doesn’t allow attachment downloads. Use 🖥 Open full email instead.</i>',
-  ].join('\n');
+    hint(downloadable ? 'Tap a number to get the file here (max 20 MB).' : 'This provider doesn’t allow downloads. Use 🖥 Open full email instead.'),
+  ]);
 
 // ── push notification (inline: copy + open) ─────────────────────────────
 export function notification(ib, msg, { codes, links }) {
   const from = msg.from || {};
-  const lines = [
-    `🛰 <b>New mail</b>  →  ${addr(ib.address)}`,
-    '',
-    `<b>${senderName(from)}</b>  <i>${esc(from.address || '')}</i>`,
+  const text = join([
+    head('🛰 New mail', esc(ib.address)),
+    `<b>${senderName(from)}</b> ~ <i>${esc(from.address || '')}</i>`,
     esc(truncate(msg.subject || '(no subject)', 140)),
-  ];
-  if (codes.length) lines.push('', card(`🔑 ${codes.map(addr).join('   ')}`));
-  else if (msg.intro) lines.push('', `<i>${esc(truncate(msg.intro, 160))}</i>`);
+    codes.length ? `\n${card(`🔑 ${codes.map(addr).join('   ')}`)}` : msg.intro ? `\n<i>${esc(truncate(msg.intro, 160))}</i>` : null,
+  ]);
   const kb = new InlineKeyboard();
-  if (codes.length) kb.add({ text: `⧉  Copy ${codes[0]}`, copy_text: { text: codes[0] } });
-  kb.add({ text: '📖  Open', callback_data: `msg:${ib.id}:${msg.id}` });
+  if (codes.length) kb.add({ text: `⧉ Copy ${codes[0]}`, copy_text: { text: codes[0] } });
+  kb.add({ text: '📖 Open', callback_data: `msg:${ib.id}:${msg.id}` });
   if (links[0]) kb.row().url(links[0].label, links[0].url);
-  return { text: lines.join('\n'), kb };
+  return { text, kb };
 }
 
 export const expired = (address) => ({
-  text: `💥 ${addr(address)} self-destructed.\n<i>The address and all of its mail are gone for good.</i>`,
-  kb: new InlineKeyboard().add({ text: '✨  New address', callback_data: 'nr' }),
+  text: join([head('💥 Address expired'), card(addr(address)), hint('Its timer ran out. The address and all of its mail are gone for good.')]),
+  kb: new InlineKeyboard().add({ text: '✨ New address', callback_data: 'nr' }),
 });
 
-// ── addresses / timer / settings ─────────────────────────────────────────
-const RULE = '────────────────────────';
-
-/** Numbered list (one page). ● marks the active address. */
+// ── addresses ────────────────────────────────────────────────────────────
 export function addresses(list, activeId, { offset = 0, total = list.length, page = 0, pages = 1 } = {}) {
-  const lines = [`<b>🗂 Your addresses</b>  ·  <i>${total} of ${config.maxInboxes}</i>`, RULE, ''];
-  if (!list.length) lines.push('<i>No addresses yet. Tap ✨ New Mail.</i>');
+  const lines = [head('🗂 Your addresses', `${total} of ${config.maxInboxes}`), ''];
+  if (!list.length) lines.push(hint('No addresses yet. Tap ✨ New Mail.'));
   list.forEach((ib, i) => {
     const on = Number(ib.id) === Number(activeId);
     lines.push(`<b>${offset + i + 1}.</b> ${on ? '●' : '○'} ${addr(ib.address)} ~ <b>${ago(Number(ib.created_at))}</b>`, '');
   });
-  if (list.length) lines.push(`<i>● active${pages > 1 ? `  ·  page ${page + 1} of ${pages}` : ''}  ·  tap a number to open it</i>`);
+  if (list.length) lines.push(hint(`● active${pages > 1 ? `  ·  page ${page + 1} of ${pages}` : ''}  ·  tap a number to open`));
   return lines.join('\n');
 }
 
-/** Full detail card for one address. */
 export function addressDetail(ib, { index, count, isActive, counts, route }) {
-  const [, domain] = ib.address.split('@');
   const created = Number(ib.created_at);
   const mails = counts ? (counts.total ? `<b>${counts.total}</b>${counts.unread ? `  ·  <b>${counts.unread} new</b>` : ''}` : '<i>none yet</i>') : '<i>syncing…</i>';
-  const sending = route ? (route.mode === 'direct' ? '✅ sends directly' : '✅ via Crevio relay, replies come back here') : '— receive only';
-  return [
-    `<b>📮 Address ${index} of ${count}</b>  ·  ${isActive ? '● <b>active</b>' : '○ <i>inactive</i>'}`,
-    RULE,
+  return join([
+    head(`📮 Address ${index} of ${count}`, isActive ? '● active' : '○ inactive'),
     card(`${addr(ib.address)}\n<i>tap to copy</i>`),
-    `├ 🌐 <b>Domain</b>      ${esc(domain)}`,
-    `├ 🛰 <b>Provider</b>    ${sourceLabel(ib)}`,
-    `├ 📬 <b>Mails</b>        ${mails}`,
-    `├ 📥 <b>Received</b>   ${ib.received || 0}   📤 <b>Sent</b> ${ib.sent || 0}`,
-    `├ 🕓 <b>Created</b>     ${fmtDate(created)} · ${ago(created)}`,
-    `├ 💣 <b>Timer</b>         ${ib.expires_at ? `self-destructs in <b>${shortDur(Math.max(0, (Number(ib.expires_at) - Date.now()) / 1000))}</b>` : 'none, lives until deleted'}`,
-    `└ ✉️ <b>Sending</b>     ${sending}`,
-  ].join('\n');
+    tree([
+      ['🌐', 'Domain', esc(ib.address.split('@')[1])],
+      ['🛰', 'Provider', sourceLabel(ib)],
+      ['📬', 'Mails', mails],
+      ['📥', 'Received', `${ib.received || 0}   📤 <b>Sent</b> ${ib.sent || 0}`],
+      ['🕓', 'Created', `${fmtDate(created)} · ${ago(created)}`],
+      ['💣', 'Timer', timerValue(ib)],
+      ['✉️', 'Sending', sendingValue(route)],
+    ]),
+  ]);
 }
 
-export const confirmDelete = (ib) => `🗑 <b>Delete this address?</b>\n\n${card(addr(ib.address))}\n<i>The address and every mail in it will be wiped. This can’t be undone.</i>`;
+export const confirmDelete = (ib) =>
+  join([head('🗑 Delete this address?'), card(addr(ib.address)), hint('The address and every mail in it will be wiped. This can’t be undone.')]);
 
+// ── timer / settings ─────────────────────────────────────────────────────
 export const timer = (ib) =>
-  [`💣 <b>Self-destruct timer</b>`, '', card(addr(ib.address)), timerLine(ib), '', '<i>Pick when this address should erase itself, along with all its mail.</i>'].join('\n');
+  join([
+    head('💣 Self-destruct timer'),
+    card(addr(ib.address)),
+    tree([['⏱', 'Now', timerValue(ib)]]),
+    '',
+    hint('Pick when this address should erase itself, along with all its mail.'),
+  ]);
 
 export const settings = (user) =>
-  [
-    `⚙️ <b>Settings</b>`,
+  join([
+    head('⚙️ Settings'),
+    tree([
+      ['🛰', 'Notifications', `<b>${user.notify ? 'ON' : 'OFF'}</b>`],
+      ['💣', 'Default timer', `<b>${ttlLabel(user.default_ttl)}</b> for new addresses`],
+      ['🗂', 'Address limit', `<b>${config.maxInboxes}</b>`],
+    ]),
     '',
-    `🛰 Live notifications  ·  <b>${user.notify ? 'ON' : 'OFF'}</b>`,
-    `💣 Default timer for new addresses  ·  <b>${ttlLabel(user.default_ttl)}</b>`,
-    '',
-    '<i>Tap a setting below to change it.</i>',
-  ].join('\n');
+    hint('Tap a setting below to change it.'),
+  ]);
 
-export const confirmWipe = () => '🧨 <b>Erase everything?</b>\n\nAll your addresses, their mail, your domains and your settings will be deleted. This can’t be undone.';
+export const confirmWipe = () =>
+  join([head('🧨 Erase everything?'), hint('All your addresses, their mail, your domains and your settings will be deleted. This can’t be undone.')]);
 
-// ── profile ──────────────────────────────────────────────────────────────
+// ── profile (photo caption, ≤ 1024 chars) ───────────────────────────────
 export function profile(user, { myDomains, domainCount, sentToday, sendLimit, isAdmin, route }) {
   const joined = new Date(Number(user.created_at)).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
-  return [
-    `👤 <b>${esc(user.first_name || 'Profile')}</b>${isAdmin ? '  ·  <i>admin</i>' : ''}`,
-    '',
-    `🆔 <code>${user.id}</code>   ${user.username ? `@${esc(user.username)}` : '<i>no username</i>'}`,
-    `🌍 Language <b>${esc(user.lang || '—')}</b>   📅 Joined <b>${joined}</b>`,
-    `📤 Sent today <b>${sentToday}</b>${sendLimit ? ` / ${sendLimit}` : '  <i>(no limit)</i>'}${route ? '' : '  <i>· sending not enabled</i>'}`,
-    `🌐 <b>${domainCount}</b> domains available${myDomains.length ? `  ·  yours: ${myDomains.map((d) => `${d.verified ? '✅' : '⏳'} ${esc(d.domain)}`).join(', ')}` : ''}`,
-    `🛰 Notifications <b>${user.notify ? 'ON' : 'OFF'}</b>   💣 Default timer <b>${ttlLabel(user.default_ttl)}</b>`,
-  ].join('\n');
+  const mine = myDomains.length ? myDomains.map((d) => `${d.verified ? '✅' : '⏳'} ${esc(d.domain)}`).join(', ') : '<i>none</i>';
+  return join([
+    head(`👤 ${esc(truncate(user.first_name || 'Profile', 30))}`, isAdmin ? 'admin' : null),
+    tree([
+      ['🆔', 'User ID', `<code>${user.id}</code>`],
+      ['🔗', 'Username', user.username ? `@${esc(user.username)}` : '<i>none</i>'],
+      ['🌍', 'Language', esc(user.lang || '—')],
+      ['📅', 'Joined', joined],
+      ['📤', 'Sent today', `<b>${sentToday}</b>${route ? (sendLimit ? ` of ${sendLimit}` : ' · no limit') : ' · <i>sending off</i>'}`],
+      ['🌐', 'Domains', `<b>${domainCount}</b> available · yours: ${mine}`],
+      ['🛰', 'Alerts', `<b>${user.notify ? 'ON' : 'OFF'}</b> · 💣 default <b>${ttlLabel(user.default_ttl)}</b>`],
+    ]),
+  ]);
 }
 
 // ── domains ──────────────────────────────────────────────────────────────
+const domainState = (d) => (!d.verified ? 'pending' : d.worker_url ? (d.can_send ? 'receiving + sending' : 'receiving') : 'verified');
+
 export function domainsHub(all, myDomains, { allowAdd }) {
   const groups = {};
   for (const d of all.filter((x) => x.kind === 'public')) (groups[providerLabel(d.provider)] ||= []).push(d.domain);
   const premium = all.filter((d) => d.kind === 'premium');
-  const lines = [`🌐 <b>Domains</b>  ·  <i>${all.length} available</i>`, ''];
+  const lines = [head('🌐 Domains', `${all.length} available`), ''];
   if (myDomains.length) {
-    lines.push('<b>⭐ Yours</b>');
-    myDomains.forEach((d) => lines.push(`   ${d.verified ? '✅' : '⏳'} ${addr(d.domain)}${d.can_send && d.worker_url ? '  ✉ sends' : ''}`));
+    lines.push('<b>⭐ Your domains</b>');
+    myDomains.forEach((d, i) => lines.push(`<b>${i + 1}.</b> ${d.verified ? '✅' : '⏳'} ${addr(d.domain)} ~ <b>${domainState(d)}</b>`));
     lines.push('');
   }
-  if (premium.length) lines.push('<b>💎 Premium</b>', `   ${premium.map((d) => esc(d.domain)).join('  ·  ')}`, '');
-  for (const [label, list] of Object.entries(groups)) lines.push(`<b>◦ ${esc(label)}</b>  <i>${list.length}</i>`, `   <i>${list.map(esc).join('  ·  ')}</i>`, '');
-  if (allowAdd) lines.push('<i>Own a domain? ➕ Add it to receive on any name @yourdomain and send from it.</i>');
+  if (premium.length) lines.push('<b>💎 Premium</b>', `<i>${premium.map((d) => esc(d.domain)).join('  ·  ')}</i>`, '');
+  lines.push('<b>◦ Public</b>');
+  lines.push(tree(Object.entries(groups).map(([label, list]) => ['🛰', esc(label), `<i>${list.map(esc).join(' · ')}</i>`])));
+  lines.push('');
+  lines.push(hint(myDomains.length ? 'Tap a number to manage your domain.' : allowAdd ? 'Own a domain? ➕ Add it to receive on any name and send from it.' : 'Tap ✨ to create an address on any of these.'));
   return lines.join('\n');
 }
 
 export const askDomain = () =>
-  [
-    `➕ <b>Add your domain</b>`,
-    '',
+  join([
+    head('➕ Add your domain'),
     'Send the domain you own, like <code>example.com</code> or <code>mail.example.com</code>.',
     '',
-    '<i>You’ll need a free Cloudflare account. Setup takes about 5 minutes and I’ll guide you through it.</i>',
-  ].join('\n');
+    tree([
+      ['☁️', 'Needs', 'a free Cloudflare account'],
+      ['⏱', 'Takes', 'about 5 minutes, guided step by step'],
+      ['✉️', 'Gives', 'any name @yourdomain, receive + send'],
+    ]),
+  ]);
 
 export function domainManage(d, check, { botUrl, relay }) {
   const c = check || {};
   const w = c.worker;
   const tick = (ok) => (ok ? '✅' : '▫️');
-  const status = d.verified ? (w?.ok ? (w.canSend ? '🟢 receiving + sending' : '🟢 receiving') : '🟡 verified · connect the worker') : '⏳ waiting for the DNS TXT record';
-  return [
-    `🏷 <b>${esc(d.domain)}</b>${d.public ? '  ·  💎 <i>shared with everyone</i>' : ''}${relay ? '  ·  🛰 <i>send relay</i>' : ''}`,
-    `<i>${status}</i>`,
-    '',
-    `${tick(true)} <b>1</b>  Add the domain to Cloudflare (free plan is fine)`,
-    `${tick(c.txtOk || d.verified)} <b>2</b>  DNS → add a <b>TXT</b> record`,
+  const status = d.verified ? (w?.ok ? (w.canSend ? '🟢 receiving + sending' : '🟢 receiving') : '🟡 verified · connect the worker') : '⏳ waiting for DNS';
+  return join([
+    head(`🏷 ${esc(d.domain)}`, status),
+    d.public || relay ? `${d.public ? '💎 shared with everyone' : ''}${relay ? '  ·  🛰 send relay' : ''}\n` : null,
+    `${tick(true)} <b>1.</b> Add the domain to Cloudflare (free plan is fine)`,
+    `${tick(c.txtOk || d.verified)} <b>2.</b> DNS → add this <b>TXT</b> record`,
     card(`name   <code>${esc(txtHost(d.domain))}</code>\nvalue  <code>${esc(config.verifyToken(d.domain))}</code>`),
-    `${tick(c.mxCloudflare)} <b>3</b>  Email → <b>Email Routing</b> → enable`,
-    `${tick(w?.ok)} <b>4</b>  Deploy the worker (📄 Worker files), then set Routing rules → <b>Catch-all</b> → Send to a Worker`,
-    `${tick(w?.ok)} <b>5</b>  🔗 Paste the worker URL here`,
-    `${tick(w?.canSend)} <b>6</b>  <i>For sending:</i> Email Service → onboard domain + <code>send_email</code> binding <code>EMAIL</code>`,
+    `${tick(c.mxCloudflare)} <b>3.</b> Email → <b>Email Routing</b> → enable`,
+    `${tick(w?.ok)} <b>4.</b> Deploy the worker (📄 Worker files) · Routing rules → <b>Catch-all</b> → Send to a Worker`,
+    `${tick(w?.ok)} <b>5.</b> 🔗 Set the worker URL here`,
+    `${tick(w?.canSend)} <b>6.</b> <i>Sending:</i> Email Service → onboard domain + <code>send_email</code> binding <code>EMAIL</code>`,
     '',
-    c.mxHosts?.length ? `<i>MX: ${esc(c.mxHosts.slice(0, 3).join(', '))}</i>` : '<i>MX: not found yet</i>',
-    w && !w.ok && w.error ? `<i>Worker: ${esc(w.error)}</i>` : '',
-    !botUrl ? '⚠️ <i>The bot has no public URL yet. Deploy on Render first.</i>' : '',
-  ]
-    .filter((l) => l !== '')
-    .join('\n');
+    hint(`MX: ${c.mxHosts?.length ? esc(c.mxHosts.slice(0, 3).join(', ')) : 'not found yet'}`),
+    w && !w.ok && w.error ? hint(`Worker: ${esc(w.error)}`) : null,
+    !botUrl ? '⚠️ <i>The bot has no public URL yet. Deploy on Render first.</i>' : null,
+  ]);
 }
 
 export const askWorkerUrl = (d) =>
-  `🔗 <b>Worker URL for ${esc(d.domain)}</b>\n\nSend the URL Cloudflare shows after you deploy, like\n<code>https://crevio-${esc(d.domain.replace(/\./g, '-'))}.yourname.workers.dev</code>`;
+  join([
+    head('🔗 Worker URL', esc(d.domain)),
+    'Send the URL Cloudflare shows after you deploy, like',
+    `<code>https://crevio-${esc(d.domain.replace(/\./g, '-'))}.yourname.workers.dev</code>`,
+  ]);
 
 export const confirmRemoveDomain = (d, n) =>
-  `🗑 <b>Remove ${esc(d.domain)}?</b>\n\n${n ? `<b>${n}</b> address${n === 1 ? '' : 'es'} on it will be deleted.\n` : ''}<i>You can add the domain again later.</i>`;
+  join([
+    head('🗑 Remove this domain?'),
+    card(addr(d.domain)),
+    n ? `<b>${n}</b> address${n === 1 ? '' : 'es'} on it will be deleted.` : null,
+    hint('You can add the domain again later.'),
+  ]);
 
 // ── compose ──────────────────────────────────────────────────────────────
-function fromBlock(ib, sender) {
-  return sender.replyTo
-    ? card(`From  ${addr(sender.email)}\nReplies →  ${addr(ib.address)}`)
-    : card(`From  ${addr(ib.address)}`);
-}
+const fromCard = (ib, sender) =>
+  card(sender.replyTo ? `<b>From</b>  ${addr(sender.email)}\n<b>Replies</b> →  ${addr(ib.address)}` : `<b>From</b>  ${addr(ib.address)}`);
+
+const STEPS = { to: 1, subject: 2, body: 3 };
 
 export function composeAsk(step, draft, ib, sender) {
   const prompts = {
-    to: '📮 <b>Who is it for?</b>\nSend the recipient’s email (up to 10, separated by commas).',
-    subject: '🏷 <b>Subject?</b>\nSend a subject line, or tap ⏭ No subject.',
-    body: '📝 <b>Your message</b>\nWrite it and send. You can also send 📎 files or photos to attach them.',
+    to: '📮 <b>Who is it for?</b>\n<i>Send the recipient’s email (up to 10, comma separated).</i>',
+    subject: '🏷 <b>Subject?</b>\n<i>Send a subject line, or tap ⏭ No subject.</i>',
+    body: '📝 <b>Your message</b>\n<i>Write it and send. Send 📎 files or photos to attach them.</i>',
   };
-  const meta = [
-    draft.to ? `📮 ${esc(draft.to)}` : '',
-    draft.subject ? `🏷 ${esc(truncate(draft.subject, 70))}` : '',
-    draft.attachments?.length ? `📎 ${draft.attachments.map((a) => esc(a.filename)).join(', ')}` : '',
-  ].filter(Boolean);
-  return [`✉️ <b>New mail</b>`, '', fromBlock(ib, sender), ...meta, ...(meta.length ? [''] : []), prompts[step]].join('\n');
+  const filled = tree([
+    draft.to ? ['📮', 'To', esc(draft.to)] : null,
+    draft.subject ? ['🏷', 'Subject', esc(truncate(draft.subject, 70))] : null,
+    draft.attachments?.length ? ['📎', 'Files', draft.attachments.map((a) => esc(a.filename)).join(', ')] : null,
+  ]);
+  return join([head('✉️ New mail', `step ${STEPS[step]} of 3`), fromCard(ib, sender), filled || null, filled ? '' : null, prompts[step]]);
 }
 
 export function composePreview(draft, ib, sender, { sentToday, limit }) {
   const size = (draft.attachments || []).reduce((s, a) => s + a.size, 0);
-  return [
-    `✉️ <b>Ready to send</b>`,
+  return join([
+    head('✉️ Ready to send', 'review'),
+    fromCard(ib, sender),
+    tree([
+      ['📮', 'To', esc(draft.to)],
+      ['🏷', 'Subject', esc(draft.subject || '(no subject)')],
+      draft.attachments?.length ? ['📎', 'Files', `${draft.attachments.map((a) => esc(a.filename)).join(', ')} · ${fmtSize(size)}`] : null,
+    ]),
     '',
-    fromBlock(ib, sender),
-    `📮 <b>To</b>  ${esc(draft.to)}`,
-    `🏷 <b>Subject</b>  ${esc(draft.subject || '(no subject)')}`,
-    draft.attachments?.length ? `📎 ${draft.attachments.map((a) => esc(a.filename)).join(', ')}  <i>${fmtSize(size)}</i>` : '',
-    '',
+    '<b>📝 Message</b>',
     `<blockquote expandable>${esc(truncate(draft.text || '', 3000))}</blockquote>`,
-    `<i>Sent today: ${sentToday}${limit ? ` of ${limit}` : ' · no daily limit'}</i>`,
-  ]
-    .filter((l) => l !== '')
-    .join('\n');
+    hint(`Sent today: ${sentToday}${limit ? ` of ${limit}` : ' · no daily limit'}`),
+  ]);
 }
 
 export const sent = (draft, sender) =>
-  `🚀 <b>Sent!</b>\n\n${card(`${addr(sender.email)}  →  ${esc(draft.to)}\n<i>${esc(draft.subject || '(no subject)')}</i>`)}${sender.replyTo ? `\n<i>Replies will arrive in ${addr(sender.replyTo)}.</i>` : ''}`;
+  join([
+    head('🚀 Sent'),
+    card(`${addr(sender.email)}\n→ ${esc(draft.to)}`),
+    tree([['🏷', 'Subject', esc(draft.subject || '(no subject)')]]),
+    sender.replyTo ? `\n${hint(`Replies will arrive in ${esc(sender.replyTo)}.`)}` : null,
+  ]);
 
 export const composeUnavailable = (isAdmin) =>
-  [
-    `✉️ <b>Sending isn’t switched on yet</b>`,
-    '',
+  join([
+    head('✉️ Sending isn’t switched on yet'),
     isAdmin
-      ? 'As admin: add your domain in 🌐 Domains, finish the setup including step 6 (sending), then tap 💎 Share with everyone. It becomes the send relay, and <b>every user</b> can send from any of their addresses.'
+      ? 'As admin: add your domain in 🌐 Domains, finish every step including 6 (sending), then tap 💎 Share with everyone. It becomes the send relay, and <b>every user</b> can send from any address.'
       : 'The bot owner hasn’t enabled sending yet. You can still add your own domain in 🌐 Domains and send from it directly.',
-  ].join('\n');
+  ]);
 
 // ── errors ───────────────────────────────────────────────────────────────
 export function problem(kind, extra = '') {
-  const why = extra && kind !== 'sendfail' ? `\n\n<i>Reason: ${esc(truncate(extra, 300))}</i>` : '';
   const map = {
-    down: '🛠 <b>Couldn’t create the address</b>\nI tried several mail providers and none of them answered. Try again in a minute.',
-    slow: '⏳ <b>Easy there</b>\nToo many requests in a row. Give it a few seconds.',
-    taken: '🙅 <b>That name is taken</b>\nTry another one. Adding a number or a dash usually works.',
-    gone: '🫥 <b>Not found</b>\nThat mail or address no longer exists.',
-    nodomain: '🌐 <b>Domain unavailable</b>\nPick another one.',
-    invalid: '✍️ <b>That name won’t work</b>\nUse 3–30 characters: a–z, 0–9, dash or underscore.',
-    baddomain: '🌐 <b>That doesn’t look like a domain</b>\nSend it like <code>example.com</code>.',
-    domaintaken: '🔒 <b>Already registered</b>\nThat domain is set up by someone else.',
-    domainoff: '🔒 <b>Custom domains are disabled</b> on this bot.',
-    nosend: '✉️ <b>Sending isn’t available</b> for this address right now.',
-    sendlimit: `⏳ <b>Daily send limit reached</b>\nYou can send ${config.sendLimitShared} mails a day through the shared relay. Add your own domain for no limit.`,
-    sendfail: `⚠️ <b>The mail couldn’t be sent</b>\n<code>${esc(extra)}</code>\n<i>E_SENDER_NOT_VERIFIED → the domain isn’t onboarded in Email Service.\nE_RECIPIENT_NOT_ALLOWED → Cloudflare’s free plan only sends to verified addresses.</i>`,
-    banned: '⛔ <b>Sending is disabled for your account.</b>',
-    noatt: '📎 This provider doesn’t allow attachment downloads.',
-    badurl: '🔗 <b>That URL won’t work</b>\nSend the full https:// address of your worker.',
-    badto: '📮 <b>That’s not an email address</b>\nSend it like <code>name@example.com</code>.',
-    toobig: '📎 <b>Too large</b>\nAttachments are limited to 15 MB in total.',
-    limit: `🗂 <b>All ${config.maxInboxes} slots are in use</b>\nDelete an address in 🗂 Addresses to make room.`,
+    down: ['🛠 Couldn’t create the address', 'I tried several mail providers and none of them answered. Try again in a minute.'],
+    slow: ['⏳ Easy there', 'The mail providers are rate-limiting right now. Give it a few seconds.'],
+    taken: ['🙅 That name is taken', 'Try another one. Adding a number or a dash usually works.'],
+    gone: ['🫥 Not found', 'That mail or address no longer exists.'],
+    nodomain: ['🌐 Domain unavailable', 'Pick another one.'],
+    invalid: ['✍️ That name won’t work', 'Use 3–30 characters: a–z, 0–9, dash or underscore.'],
+    baddomain: ['🌐 That doesn’t look like a domain', 'Send it like <code>example.com</code>.'],
+    domaintaken: ['🔒 Already registered', 'That domain is set up by someone else.'],
+    domainoff: ['🔒 Custom domains are off', 'Only the bot owner can add domains here.'],
+    nosend: ['✉️ Sending isn’t available', 'This address can’t send right now.'],
+    sendlimit: ['⏳ Daily send limit reached', `You can send ${config.sendLimitShared} mails a day through the shared relay. Add your own domain for no limit.`],
+    sendfail: ['⚠️ The mail couldn’t be sent', 'E_SENDER_NOT_VERIFIED → the domain isn’t onboarded in Email Service.\nE_RECIPIENT_NOT_ALLOWED → Cloudflare’s free plan only sends to verified addresses.'],
+    banned: ['⛔ Sending is disabled', 'Your account can’t send mail.'],
+    noatt: ['📎 No downloads here', 'This provider doesn’t allow attachment downloads.'],
+    badurl: ['🔗 That URL won’t work', 'Send the full https:// address of your worker.'],
+    badto: ['📮 That’s not an email address', 'Send it like <code>name@example.com</code>.'],
+    toobig: ['📎 Too large', 'Attachments are limited to 15 MB in total.'],
+    limit: [`🗂 All ${config.maxInboxes} slots are in use`, 'Delete an address in 🗂 Addresses to make room.'],
   };
-  return (map[kind] || map.down) + why;
+  const [title, text] = map[kind] || map.down;
+  return join([head(title), text, extra ? `\n${hint(`Reason: ${esc(truncate(extra, 300))}`)}` : null]);
 }

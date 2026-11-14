@@ -214,6 +214,25 @@ S.create = async (ctx, opts) => {
 };
 
 // ── inbox & mail ─────────────────────────────────────────────────────────
+/** Rows of « n » buttons, 5 per row. */
+function numberRows(items, offset, onTap) {
+  const rows = [];
+  for (let i = 0; i < items.length; i += 5) {
+    rows.push(items.slice(i, i + 5).map((item, j) => act(`« ${offset + i + j + 1} »`, (c) => onTap(c, item))));
+  }
+  return rows;
+}
+
+/** ‹ Prev · n / N · Next › row (null when there is only one page). */
+function pagerRow(page, pages, go, note) {
+  if (pages <= 1) return null;
+  return [
+    page > 0 ? act('‹ Prev', (c) => go(c, page - 1)) : null,
+    act(`${page + 1} / ${pages}`, (c) => toast(c, note)),
+    page < pages - 1 ? act('Next ›', (c) => go(c, page + 1)) : null,
+  ];
+}
+
 S.inbox = async (ctx, inboxId, { page = 0, refresh = false, fresh } = {}) => {
   const ib = inboxId ? store.getOwnedInbox(ctx.from.id, inboxId) : activeOf(ctx);
   if (!ib) return S.home(ctx, { fresh });
@@ -229,17 +248,14 @@ S.inbox = async (ctx, inboxId, { page = 0, refresh = false, fresh } = {}) => {
   store.markSeen(ib.id, msgs.map((m) => m.id)).catch(() => {});
   const pages = Math.max(1, Math.ceil(msgs.length / ui.PAGE));
   page = Math.min(Math.max(0, page), pages - 1);
-  const kb = msgs.slice(page * ui.PAGE, page * ui.PAGE + ui.PAGE).map((m, i) => [act(ui.inboxKey(m, page * ui.PAGE + i + 1), (c) => S.message(c, ib, m.id))]);
-  if (!msgs.length) kb.push([copy('⧉ Copy address', ib.address)]);
-  if (pages > 1) {
-    kb.push([
-      page > 0 ? act('‹ Newer', (c) => S.inbox(c, ib.id, { page: page - 1 })) : null,
-      act(`${page + 1} / ${pages}`, (c) => toast(c, `${msgs.length} mails`)),
-      page < pages - 1 ? act('Older ›', (c) => S.inbox(c, ib.id, { page: page + 1 })) : null,
-    ]);
-  }
-  kb.push([act('🔄 Refresh', (c) => S.inbox(c, ib.id, { page, refresh: true })), svc.sendRoute(ib) ? act('✉️ Compose', (c) => S.compose(c, ib.id)) : null]);
-  kb.push([homeBtn]);
+  const slice = msgs.slice(page * ui.PAGE, page * ui.PAGE + ui.PAGE);
+  const kb = [
+    ...numberRows(slice, page * ui.PAGE, (c, m) => S.message(c, ib, m.id)),
+    pagerRow(page, pages, (c, p) => S.inbox(c, ib.id, { page: p }), `${msgs.length} mails`),
+    msgs.length ? null : [copy('⧉ Copy address', ib.address)],
+    [act('🔄 Refresh', (c) => S.inbox(c, ib.id, { page, refresh: true })), svc.sendRoute(ib) ? act('✉️ Compose', (c) => S.compose(c, ib.id)) : null],
+    store.countInboxes(ctx.from.id) > 1 ? [act('🔁 Switch address', (c) => S.addresses(c))] : null,
+  ];
   return present(ctx, { name: 'inbox', text: ui.inbox(ib, msgs, page, pages), kb }, { fresh });
 };
 
@@ -251,32 +267,42 @@ S.message = async (ctx, ib, msgId, opts) => {
   } catch {
     return S.problem(ctx, 'gone', { back: act('‹ Inbox', (c) => S.inbox(c, ib.id)) });
   }
+  // Position in the inbox, for "Mail 2 of 5" and prev/next navigation.
+  const list = (await within(svc.getList(ib, 30_000).catch(() => null), 1500, null)) ?? svc.cachedList(ib.id)?.list ?? [];
+  const at = list.findIndex((m) => m.id === msg.id);
+  const wasNew = at >= 0 ? !list[at].seen : !msg.seen;
   svc.markRead(ib, msg.id).catch(() => {});
   const a = analyse(msg);
   const view = viewerUrl(ib.id, msg.id);
   const att = msg.attachments || [];
   const canReply = svc.canSendFrom(ib) && msg.from?.address;
+  const prev = at > 0 ? list[at - 1] : null;
+  const next = at >= 0 && at < list.length - 1 ? list[at + 1] : null;
   return present(ctx, {
     name: 'message',
-    text: ui.message(ib, msg, a),
+    text: ui.message(ib, msg, a, { index: at >= 0 ? at + 1 : 0, total: list.length, wasNew }),
     kb: [
       a.codes.map((code) => copy(`⧉ Copy ${code}`, code)),
       a.links.map((l) => url(l.label, l.url)),
       view ? [webapp('🖥 Open full email', view)] : null,
       [att.length ? act(`📎 Files · ${att.length}`, (c) => S.attachments(c, ib, msg)) : null, canReply ? act('↩️ Reply', (c) => S.reply(c, ib, msg)) : null],
+      prev || next ? [prev ? act('‹ Newer', (c) => S.message(c, ib, prev.id)) : null, next ? act('Older ›', (c) => S.message(c, ib, next.id)) : null] : null,
       [act('🗑 Delete', async (c) => {
         await svc.deleteMessage(ib, msg.id);
         toast(c, '🗑 Deleted');
-        return S.inbox(c, ib.id);
-      }), act('‹ Inbox', (c) => S.inbox(c, ib.id))],
+        return S.inbox(c, ib.id, { page: Math.floor(Math.max(0, at) / ui.PAGE) });
+      }), act('‹ Inbox', (c) => S.inbox(c, ib.id, { page: Math.floor(Math.max(0, at) / ui.PAGE) }))],
     ],
   }, opts);
 };
 
 S.attachments = (ctx, ib, msg) => {
   const downloadable = provider(ib.provider).caps.attachments;
-  const kb = downloadable ? (msg.attachments || []).slice(0, 10).map((a, i) => [act(`⬇️ ${i + 1} · ${truncate(a.filename || 'file', 30)}`, (c) => S.download(c, ib, msg, a))]) : [];
-  kb.push([act('‹ Back to mail', (c) => S.message(c, ib, msg.id))]);
+  const files = (msg.attachments || []).slice(0, 20);
+  const kb = [
+    ...(downloadable ? numberRows(files, 0, (c, a) => S.download(c, ib, msg, a)) : []),
+    [act('‹ Back to mail', (c) => S.message(c, ib, msg.id))],
+  ];
   return present(ctx, { name: 'attachments', text: ui.attachments(msg, downloadable), kb });
 };
 
@@ -305,17 +331,9 @@ S.addresses = (ctx, opts = {}) => {
   const page = Math.min(Math.max(0, opts.page ?? Math.floor(Math.max(0, list.findIndex((x) => x.id === active?.id)) / ADDR_PAGE)), pages - 1);
   const slice = list.slice(page * ADDR_PAGE, page * ADDR_PAGE + ADDR_PAGE);
 
-  const kb = [];
-  for (let i = 0; i < slice.length; i += 5) {
-    kb.push(slice.slice(i, i + 5).map((ib, j) => act(`« ${page * ADDR_PAGE + i + j + 1} »`, (c) => S.address(c, ib.id))));
-  }
-  if (pages > 1) {
-    kb.push([
-      page > 0 ? act('‹ Prev', (c) => S.addresses(c, { page: page - 1 })) : null,
-      act(`${page + 1} / ${pages}`, (c) => toast(c, `${list.length} addresses`)),
-      page < pages - 1 ? act('Next ›', (c) => S.addresses(c, { page: page + 1 })) : null,
-    ]);
-  }
+  const kb = [...numberRows(slice, page * ADDR_PAGE, (c, ib) => S.address(c, ib.id))];
+  const pager = pagerRow(page, pages, (c, p) => S.addresses(c, { page: p }), `${list.length} addresses`);
+  if (pager) kb.push(pager);
   kb.push([list.length < config.maxInboxes ? act('✨ New address', (c) => S.picker(c)) : null]);
   return present(ctx, { name: 'addresses', text: ui.addresses(slice, active?.id, { offset: page * ADDR_PAGE, total: list.length, page, pages }), kb }, opts);
 };
@@ -483,10 +501,8 @@ S.domains = async (ctx, opts) => {
     name: 'domains',
     text: ui.domainsHub(await domainsFor(uid), mine, { allowAdd }),
     kb: [
-      [act('✨ Create an address', (c) => S.picker(c))],
-      ...mine.map((d) => [act(`${d.verified ? '✅' : '⏳'} ${d.domain}  ›`, (c) => S.domain(c, d.id))]),
-      allowAdd ? [act('➕ Add my domain', (c) => S.addDomain(c))] : null,
-      [homeBtn],
+      ...numberRows(mine, 0, (c, d) => S.domain(c, d.id)),
+      [act('✨ Create an address', (c) => S.picker(c)), allowAdd ? act('➕ Add my domain', (c) => S.addDomain(c)) : null],
     ],
   }, opts);
 };
