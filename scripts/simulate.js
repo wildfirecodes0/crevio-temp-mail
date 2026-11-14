@@ -28,6 +28,11 @@ let mid = 100;
 const calls = [];
 bot.api.config.use(async (prev, method, payload) => {
   calls.push({ method, payload });
+  // The menu carrier must survive all navigation, or Telegram hides the bottom menu.
+  if (method === 'deleteMessage' && payload.message_id === store.getUser(1001)?.anchor_msg) {
+    errors++;
+    console.error('✗ menu carrier message was deleted');
+  }
   const text = payload.text ?? payload.caption ?? payload.media?.caption ?? '';
   const limit = ['sendPhoto', 'editMessageMedia'].includes(method) ? 1024 : 4096;
   assert.ok(text.length <= limit, `${method} text too long (${text.length})`);
@@ -96,9 +101,10 @@ const t0 = Date.now();
 let p = await say('/start');
 const anchor = calls.find((c) => c.payload.reply_markup?.keyboard);
 assert.ok(anchor, 'main menu keyboard sent');
-assert.equal(anchor.payload.text, '⌨️');
-await new Promise((r) => setTimeout(r, 1400));
-assert.ok(calls.some((c) => c.method === 'deleteMessage' && c.payload.message_id === anchor.result?.message_id) || calls.filter((c) => c.method === 'deleteMessage').length, 'menu carrier message is deleted');
+assert.equal(anchor.payload.text, '📬');
+assert.equal(calls.filter((c) => c.payload.reply_markup?.keyboard).length, 1, 'exactly one menu carrier on /start');
+const carrierId = store.getUser(user.id).anchor_msg;
+assert.ok(carrierId, 'carrier id stored');
 assert.deepEqual(anchor.payload.reply_markup.keyboard.flat().map((k) => k.text), ['🏠 Home', '📥 Inbox', '✨ New Mail', '✉️ Compose', '🗂 Addresses', '🌐 Domains', '👤 Profile', '⚙️ Settings', '❔ Help']);
 assert.ok(p.photo, 'welcome is a photo card');
 step('/start → menu + welcome', p);

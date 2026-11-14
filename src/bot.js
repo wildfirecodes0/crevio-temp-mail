@@ -24,7 +24,7 @@ export function analyse(msg) {
 }
 
 // ── main menu (bottom reply keyboard, never changes) ─────────────────────
-const KB_VER = 5;
+const KB_VER = 6;
 const M = {
   home: '🏠 Home',
   inbox: '📥 Inbox',
@@ -48,17 +48,18 @@ const mainKeyboard = {
 };
 
 /**
- * Install the main-menu keyboard without leaving a message behind: Telegram only accepts a reply keyboard
- * attached to a message, so we send a tiny one and delete it a moment later. The keyboard stays.
- * Re-installed on /start, on commands from the ☰ Menu button (in case a client dropped it), and when the layout changes.
+ * Telegram shows a reply keyboard only while the message that carried it still exists; deleting that message
+ * removes the menu. So the menu rides on one permanent "carrier": a single 📬 emoji, which Telegram renders
+ * as a big animated emoji without a bubble. It is never deleted by panel navigation, and is replaced only on
+ * /start, /menu, or when the menu layout version changes.
  */
 async function ensureMenu(ctx, force = false) {
   const user = store.getUser(ctx.from.id);
-  if (!user || (!force && user.kb_ver === KB_VER)) return;
-  if (user.anchor_msg) ctx.api.deleteMessage(ctx.chat.id, user.anchor_msg).catch(() => {}); // anchor from older versions
-  store.setUser(user.id, { anchor_msg: null, kb_ver: KB_VER });
-  const m = await ctx.api.sendMessage(ctx.chat.id, '⌨️', { reply_markup: mainKeyboard, disable_notification: true });
-  setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, m.message_id).catch(() => {}), 1200);
+  if (!user || (!force && user.kb_ver === KB_VER && user.anchor_msg)) return;
+  const old = user.anchor_msg;
+  const m = await ctx.api.sendMessage(ctx.chat.id, '📬', { reply_markup: mainKeyboard, disable_notification: true });
+  store.setUser(user.id, { anchor_msg: m.message_id, kb_ver: KB_VER });
+  if (old && old !== m.message_id) ctx.api.deleteMessage(ctx.chat.id, old).catch(() => {});
 }
 
 const drafts = new Map(); // userId → { inboxId, step, draft }
@@ -704,7 +705,8 @@ export function createBot() {
   bot.use(async (ctx, next) => {
     if (!ctx.from || ctx.from.is_bot) return;
     store.touchUser(ctx.from);
-    if (ctx.message) await ensureMenu(ctx).catch(() => {});
+    // /start and /menu always re-send the carrier themselves
+    if (ctx.message && !/^\/(start|menu|home)\b/.test(ctx.message.text || '')) await ensureMenu(ctx).catch(() => {});
     return next();
   });
 
@@ -734,7 +736,7 @@ export function createBot() {
   const cmd = (name, fn) =>
     bot.command(name, async (ctx) => {
       ctx.deleteMessage().catch(() => {});
-      await ensureMenu(ctx, true).catch(() => {}); // commands come from the ☰ Menu button: make sure the keyboard is there
+      await ensureMenu(ctx).catch(() => {});
       return fn(ctx);
     });
   cmd(['menu', 'home'], async (c) => {
