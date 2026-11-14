@@ -20,10 +20,10 @@ setInboundHandler((ib, msgId) => pushMail(bot, ib, msgId));
 await bot.api.setMyCommands(COMMANDS).catch((e) => console.warn('setMyCommands:', e.message));
 await bot.api
   .setMyDescription(
-    'Crevio — disposable email inside Telegram.\n\n⚡ 15+ domains, address in one tap\n🔑 OTP codes detected & copyable\n🛰 New mail pushed live\n🏷 Bring your own domain: receive & send\n💣 Self-destruct timers',
+    'Crevio Mail Bot — disposable email inside Telegram.\n\n⚡ 15+ domains, address in one tap\n🔑 OTP codes detected & copyable\n🛰 New mail pushed live\n🏷 Bring your own domain: receive & send\n💣 Self-destruct timers',
   )
   .catch(() => {});
-await bot.api.setMyShortDescription('Burner email in one tap — live inbox, OTP copy, self-destruct.').catch(() => {});
+await bot.api.setMyShortDescription('Crevio Mail Bot: burner email in one tap, live inbox, OTP copy, send mail, your own domain.').catch(() => {});
 
 const useWebhook = config.publicUrl.startsWith('https://');
 const onUpdate = useWebhook ? webhookCallback(bot, 'http', { secretToken: config.webhookSecret, timeoutMilliseconds: 25_000 }) : null;

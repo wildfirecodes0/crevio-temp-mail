@@ -6,7 +6,8 @@ import { esc, truncate, ago, shortDur, fmtSize, fmtDate } from './utils.js';
 import { providerLabel } from './providers/index.js';
 import { txtHost } from './domains.js';
 
-export const H = (sub) => `✦ <b>𝗖𝗥𝗘𝗩𝗜𝗢</b>${sub ? `  ·  <i>${sub}</i>` : ''}`;
+export const BRAND = 'Crevio Mail Bot';
+export const H = (sub) => `✦ <b>𝗖𝗥𝗘𝗩𝗜𝗢 𝗠𝗔𝗜𝗟</b>${sub ? `  ·  <i>${sub}</i>` : ''}`;
 const card = (inner) => `<blockquote>${inner}</blockquote>`;
 const addr = (a) => `<code>${esc(a)}</code>`;
 
@@ -33,14 +34,14 @@ const sourceLabel = (ib) => (ib.provider === 'own' ? 'custom domain' : providerL
 // ── home ─────────────────────────────────────────────────────────────────
 export function welcome(firstName, domainCount) {
   return [
-    `<b>Hey ${esc(firstName || 'there')} 👋  Welcome to Crevio.</b>`,
+    `<b>Hey ${esc(firstName || 'there')} 👋  Welcome to ${BRAND}.</b>`,
     '',
     'Burner inboxes in one tap. Sign up anywhere and keep your real email clean.',
     '',
     `⚡ ${domainCount}+ domains   🔑 OTP copy   🛰 live push`,
     '✉️ send mail   🏷 your own domain   💣 self-destruct',
     '',
-    '<i>Tap ⚡ Instant address below to start.</i>',
+    '<i>Tap ⚡ Instant address to get your first inbox.</i>',
   ].join('\n');
 }
 
@@ -76,7 +77,7 @@ export function help() {
   return [
     H('how it works'),
     '',
-    '<b>1 ·</b> ✨ <b>New Mail</b> → pick a domain (or ⚡ Instant).',
+    '<b>1 ·</b> ✨ <b>New Mail</b> (menu below) → pick a domain, or ⚡ Instant.',
     '<b>2 ·</b> Use the address on any site.',
     '<b>3 ·</b> Mail arrives here instantly. Codes show up as <code>482913</code> (tap to copy), and verify links are clickable.',
     '',
@@ -148,7 +149,7 @@ export function inbox(ib, msgs, page, pages) {
       `      ${esc(truncate(m.subject || '(no subject)', 52))}`,
     );
   });
-  lines.push('', '<i>Open a mail from the keyboard below.</i>');
+  lines.push('', '<i>Tap a mail below to open it.</i>');
   return lines.join('\n');
 }
 
@@ -376,6 +377,7 @@ export function problem(kind, extra = '') {
     noatt: '📎 This provider doesn’t allow attachment downloads.',
     badurl: '🔗 <b>That URL won’t work</b>\nSend the full https:// address of your worker.',
     badto: '📮 <b>That’s not an email address</b>\nSend it like <code>name@example.com</code>.',
+    toobig: '📎 <b>Too large</b>\nAttachments are limited to 15 MB in total.',
     limit: `🗂 <b>All ${config.maxInboxes} slots are in use</b>\nDelete an address in 🗂 Addresses to make room.`,
   };
   return map[kind] || map.down;

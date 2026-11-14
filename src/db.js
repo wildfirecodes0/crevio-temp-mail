@@ -65,6 +65,8 @@ export async function migrate() {
     ['panel_msg', 'INTEGER'],
     ['lang', 'TEXT'],
     ['banned', 'INTEGER NOT NULL DEFAULT 0'],
+    ['anchor_msg', 'INTEGER'],
+    ['kb_ver', 'INTEGER NOT NULL DEFAULT 0'],
   ]);
   await addColumns('inboxes', [
     ['auth', 'TEXT'],
@@ -107,7 +109,7 @@ export function touchUser(u) {
     user = {
       id: u.id, first_name: u.first_name || '', username: u.username || null, lang: u.language_code || null,
       active_inbox: null, notify: 1, default_ttl: 0, blocked: 0, banned: 0, created_at: t, last_seen: t,
-      generated: 0, disposed: 0, received: 0, sent: 0, panel_msg: null,
+      generated: 0, disposed: 0, received: 0, sent: 0, panel_msg: null, anchor_msg: null, kb_ver: 0,
     };
     users.set(u.id, user);
     bg(
@@ -130,7 +132,7 @@ export function touchUser(u) {
 
 export const getUser = (id) => users.get(Number(id)) ?? null;
 
-const USER_FIELDS = new Set(['active_inbox', 'notify', 'default_ttl', 'blocked', 'banned', 'panel_msg']);
+const USER_FIELDS = new Set(['active_inbox', 'notify', 'default_ttl', 'blocked', 'banned', 'panel_msg', 'anchor_msg', 'kb_ver']);
 export function setUser(id, patch) {
   const u = users.get(Number(id));
   if (!u) return;

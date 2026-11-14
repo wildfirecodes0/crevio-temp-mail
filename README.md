@@ -1,4 +1,6 @@
-# ✦ Crevio — Temp Mail for Telegram
+# ✦ Crevio Mail Bot — Temp Mail for Telegram
+
+Live at **[@CrevioMailBot](https://t.me/CrevioMailBot)**.
 
 A disposable-email bot with a UI built around how people actually use temp mail: you need an address *now*, you need the code *now*, and then you want it gone. It also handles **your own domain**, for receiving and for sending.
 
@@ -6,7 +8,7 @@ A disposable-email bot with a UI built around how people actually use temp mail:
 
 | | |
 |---|---|
-| **⌨️ Keyboard-first UI** | All navigation uses the bottom keyboard. Every screen brings its own keys (domains, mails, timer options, settings…). Inline buttons appear only on new-mail alerts (⧉ copy code · 📖 open). |
+| **⌨️ Menu + inline actions** | The bottom keyboard is a fixed main menu (Home · Inbox · New Mail · Compose · Addresses · Domains · Profile · Settings · Help). Each screen carries its own inline buttons: domain grid, timer options, settings toggles, domain setup (with ⧉ copy for DNS records), mail actions (⧉ copy code, verify link, full viewer, files, reply, delete). Taps edit the screen in place. |
 | **🖼 Image cards** | Rendered welcome, new-address and profile cards (satori + resvg), including Hindi names. |
 | **Clean chat** | Your taps and typed input are removed, and each screen replaces the previous one, so the chat never fills up. |
 | **⚡ Fast** | Every tap is acknowledged instantly. Users, addresses and domains are served from memory, inbox lists are cached, and slow work shows a loading frame and then fills in. |

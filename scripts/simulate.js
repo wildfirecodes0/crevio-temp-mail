@@ -21,19 +21,21 @@ const assert = (await import('node:assert/strict')).default;
 
 await store.migrate();
 const bot = createBot();
-bot.botInfo = { id: 1, is_bot: true, first_name: 'Crevio', username: 'crevio_bot', can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false };
+bot.botInfo = { id: 1, is_bot: true, first_name: 'Crevio Mail Bot', username: 'CrevioMailBot', can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false };
 
 // ── fake Telegram API ─────────────────────────────────────────────────────
 let mid = 100;
 const calls = [];
 bot.api.config.use(async (prev, method, payload) => {
   calls.push({ method, payload });
-  const text = payload.text ?? payload.caption ?? '';
-  const limit = method === 'sendPhoto' ? 1024 : 4096;
+  const text = payload.text ?? payload.caption ?? payload.media?.caption ?? '';
+  const limit = ['sendPhoto', 'editMessageMedia'].includes(method) ? 1024 : 4096;
   assert.ok(text.length <= limit, `${method} text too long (${text.length})`);
-  for (const row of payload.reply_markup?.keyboard ?? []) for (const b of row) assert.ok(String(b.text).trim(), 'empty key');
   for (const row of payload.reply_markup?.inline_keyboard ?? []) {
-    for (const b of row) if (b.callback_data) assert.ok(Buffer.byteLength(b.callback_data) <= 64, `callback too long: ${b.callback_data}`);
+    for (const b of row) {
+      assert.ok(String(b.text).trim(), 'empty button');
+      if (b.callback_data) assert.ok(Buffer.byteLength(b.callback_data) <= 64, `callback too long: ${b.callback_data}`);
+    }
   }
   const ok = (result) => ({ ok: true, result });
   const msg = { message_id: ++mid, date: 0, chat: { id: payload.chat_id, type: 'private' }, text };
@@ -52,103 +54,129 @@ bot.catch((e) => {
   console.error('BOT ERROR', e.error);
 });
 
-const panel = () => [...calls].reverse().find((c) => ['sendMessage', 'sendPhoto'].includes(c.method) && c.payload.reply_markup?.keyboard);
+const PANEL_METHODS = ['sendMessage', 'sendPhoto', 'editMessageText', 'editMessageMedia'];
+let cur = null; // current panel
+function track() {
+  const c = [...calls].reverse().find((x) => PANEL_METHODS.includes(x.method) && x.payload.reply_markup?.inline_keyboard && !/^🛰/.test(x.payload.text || ''));
+  if (!c) return cur;
+  cur = {
+    text: c.payload.text ?? c.payload.caption ?? c.payload.media?.caption,
+    kb: c.payload.reply_markup.inline_keyboard.flat(),
+    photo: c.method === 'sendPhoto' || c.method === 'editMessageMedia',
+    edited: c.method.startsWith('edit'),
+  };
+  return cur;
+}
 async function say(text) {
   calls.length = 0;
   const entities = text.startsWith('/') ? [{ type: 'bot_command', offset: 0, length: text.split(' ')[0].length }] : undefined;
   await bot.handleUpdate({ update_id: ++uid, message: { message_id: ++mid, date: 0, chat, from: user, text, entities } });
-  const p = panel();
-  return p ? { ...p.payload, text: p.payload.text ?? p.payload.caption, photo: p.method === 'sendPhoto' } : null;
+  return track();
 }
 async function callback(data) {
   calls.length = 0;
-  await bot.handleUpdate({ update_id: ++uid, callback_query: { id: String(uid), from: user, chat_instance: 'x', data, message: { message_id: 5, date: 0, chat, text: '…' } } });
-  const p = panel();
-  return p ? { ...p.payload, text: p.payload.text ?? p.payload.caption } : null;
+  const id = store.getUser(user.id)?.panel_msg ?? 5;
+  const message = { message_id: id, date: 0, chat, ...(cur?.photo ? { photo: [{}] } : { text: '…' }) };
+  await bot.handleUpdate({ update_id: ++uid, callback_query: { id: String(uid), from: user, chat_instance: 'x', data, message } });
+  return track();
 }
-const keys = (p) => (p?.reply_markup?.keyboard ?? []).flat().map((b) => b.text);
-const key = (p, re) => {
-  const k = keys(p).find((t) => re.test(t));
-  assert.ok(k, `no key matching ${re} in [${keys(p).join(' | ')}]`);
-  return k;
+const btns = () => cur?.kb ?? [];
+const find = (re) => {
+  const b = btns().find((x) => re.test(x.text));
+  assert.ok(b, `no button matching ${re} in [${btns().map((x) => x.text).join(' | ')}]`);
+  return b;
 };
-const step = (name, p) => console.log(`✓ ${name.padEnd(30)} ${(p?.text || '').split('\n')[0].replace(/<[^>]+>/g, '').slice(0, 56)}${p?.photo ? '  🖼' : ''}`);
+const tap = (re) => callback(find(re).callback_data);
+const step = (name, p = cur) =>
+  console.log(`✓ ${name.padEnd(30)} ${(p?.text || '').split('\n')[0].replace(/<[^>]+>/g, '').slice(0, 50)}${p?.photo ? '  🖼' : ''}${p?.edited ? '  ✎' : ''}`);
 
 // ── flows ─────────────────────────────────────────────────────────────────
 const t0 = Date.now();
 let p = await say('/start');
+const anchor = calls.find((c) => c.payload.reply_markup?.keyboard);
+assert.ok(anchor, 'main menu keyboard sent');
+assert.deepEqual(anchor.payload.reply_markup.keyboard.flat().map((k) => k.text), ['🏠 Home', '📥 Inbox', '✨ New Mail', '✉️ Compose', '🗂 Addresses', '🌐 Domains', '👤 Profile', '⚙️ Settings', '❔ Help']);
 assert.ok(p.photo, 'welcome is a photo card');
-assert.ok(!calls.some((c) => c.payload.reply_markup?.inline_keyboard), 'no inline keyboards on screens');
-step('/start → welcome card', p);
+step('/start → menu + welcome', p);
 
 const domains = await publicDomains();
 const byProvider = Object.groupBy(domains, (d) => d.provider);
 console.log(`  domains: ${domains.length} → ${Object.entries(byProvider).map(([k, v]) => `${k}:${v.length}`).join(' ')}`);
 
-p = await say(key(p, /Choose domain/));
-step('Choose domain → picker', p);
-assert.ok(keys(p).filter((k) => k.startsWith('@')).length >= 5);
+p = await tap(/Choose domain/);
+step('Choose domain → inline grid', p);
+assert.ok(btns().filter((b) => b.text.startsWith('@')).length >= 10);
 
 const created = [];
 for (const [pid, list] of Object.entries(byProvider)) {
   p = await say('✨ New Mail');
+  const re = new RegExp(`^@${list[0].domain.replace(/\./g, '\\.')}$`);
+  if (!btns().some((b) => re.test(b.text))) p = await tap(/Next/);
   const t = Date.now();
-  p = await say(key(p, new RegExp(`^@${list[0].domain.replace(/\./g, '\\.')}$`)));
+  p = await tap(re);
   const ok = /live/.test(p?.text || '') && p.photo;
   console.log(`${ok ? '✓' : '✗'} create on ${pid.padEnd(4)} @${list[0].domain.padEnd(22)} ${Date.now() - t}ms${ok ? '  🖼' : ` ${p?.text?.slice(0, 80)}`}`);
   if (ok) created.push(store.getActiveInbox(store.getUser(user.id)));
 }
 assert.ok(created.length >= 2, 'at least two providers should work');
+assert.ok(find(/Copy address/).copy_text, 'copy address button');
 
 for (const ib of created) {
   store.setUser(user.id, { active_inbox: ib.id });
   const t = Date.now();
   p = await say('📥 Inbox');
+  if (process.env.DEBUG) console.log(calls.map((c) => c.method + ':' + JSON.stringify(c.payload).slice(0, 160)));
   console.log(`✓ inbox ${ib.provider.padEnd(4)} ${String(Date.now() - t).padStart(5)}ms  ${p.text.split('\n')[0].replace(/<[^>]+>/g, '')}`);
 }
+p = await tap(/Refresh/);
+assert.ok(p.edited, 'refresh edits in place');
+step('inbox refresh', p);
 
 p = await say('✨ New Mail');
-p = await say('✍️ Custom name');
+p = await tap(/Custom name/);
 step('custom name prompt', p);
 p = await say('My.Shop 1');
-step('custom name → picker', p);
+assert.ok(p.edited, 'prompt panel edited after typing');
 assert.match(p.text, /my-shop-1@/);
-p = await say('✖ Cancel');
+step('custom name → domain grid', p);
+p = await tap(/Cancel/);
 step('cancel → home', p);
-assert.ok(keys(p).some((k) => k.startsWith('📥 Inbox')));
 
-p = await say('👤 Profile');
-assert.ok(p.photo, 'profile is a photo card');
-step('Profile card', p);
-
-p = await say('🗂 Addresses');
-step('Addresses', p);
-p = await say(key(p, /^○ /));
-step('switch address', p);
-p = await say('💣 Timer');
-step('Timer', p);
-p = await say(key(p, /10 min/));
+p = await say('🏠 Home');
+step('Home dashboard', p);
+p = await tap(/Timer/);
+step('timer', p);
+p = await tap(/10 min/);
 assert.match(p.text, /Self-destructs in/);
 step('timer armed', p);
-p = await say('⚙️ Settings');
-p = await say(key(p, /Notifications/));
-assert.ok(keys(p).some((k) => /OFF/.test(k)));
-p = await say(key(p, /Notifications/));
-p = await say(key(p, /Default timer/));
-step('settings toggled', p);
+
+p = await say('👤 Profile');
+assert.ok(p.photo && find(/Copy my ID/).copy_text);
+step('Profile card', p);
+p = await tap(/Settings/);
+step('profile → settings', p);
+p = await tap(/Notifications/);
+assert.ok(btns().some((b) => /OFF/.test(b.text)));
+p = await tap(/Notifications/);
+p = await tap(/Default timer/);
+step('settings toggles', p);
+
+p = await say('🗂 Addresses');
+p = await tap(/^○/);
+step('switch address', p);
 
 p = await say('✉️ Compose');
-step('compose (no relay yet)', p);
 assert.match(p.text, /isn’t switched on/);
+step('compose (no relay yet)', p);
 
 // ── custom domain as admin → share → becomes relay ───────────────────────
 p = await say('🌐 Domains');
-step('Domains', p);
-p = await say('➕ Add my domain');
+p = await tap(/Add my domain/);
 p = await say('https://Mail.Crevio-Test.dev/');
 step('domain added', p);
+assert.ok(find(/TXT value/).copy_text.text.startsWith('crevio-verify='), 'copy TXT value');
 const dom = store.findDomain('mail.crevio-test.dev');
-store.setDomain(dom.id, { verified: 1 }); // pretend the TXT record exists
+store.setDomain(dom.id, { verified: 1 });
 
 const worker = http
   .createServer(async (req, res) => {
@@ -160,39 +188,30 @@ const worker = http
     res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true,"id":"m1"}');
   })
   .listen(0);
-p = await say('🌐 Domains');
-p = await say(key(p, /mail\.crevio-test\.dev/));
-p = await say(key(p, /worker URL/));
-calls.length = 0;
-const fakeWorkerUrl = `http://127.0.0.1:${worker.address().port}`;
-// the bot requires https for user input; set directly as if pinged
-store.setDomain(dom.id, { worker_url: fakeWorkerUrl, can_send: 1 });
-p = await say('✖ Cancel');
-step('domain manage', p);
-p = await say(key(p, /Share with everyone/));
+store.setDomain(dom.id, { worker_url: `http://127.0.0.1:${worker.address().port}`, can_send: 1 });
+p = await tap(/Check again/);
+p = await tap(/Share with everyone/);
 assert.match(p.text, /send relay/);
 step('shared → relay', p);
 
-// relay send from a public temp address
 store.setUser(user.id, { active_inbox: created[0].id });
 p = await say('✉️ Compose');
-step('compose via relay', p);
 assert.match(p.text, /Replies/);
+step('compose via relay', p);
 p = await say('friend@example.com');
-p = await say('⏭ No subject');
+p = await tap(/No subject/);
 p = await say('Hello from a temp address');
 step('preview', p);
-p = await say('🚀 Send now');
+p = await tap(/Send now/);
 step('sent', p);
 const local = created[0].address.split('@')[0];
 assert.equal(worker.last.from.email, `${local}@mail.crevio-test.dev`);
 assert.equal(worker.last.replyTo.email, created[0].address);
 console.log(`  relay: From ${worker.last.from.email}  Reply-To ${worker.last.replyTo.email}`);
 
-// own-domain address + inbound mail
 p = await say('🌐 Domains');
-p = await say(key(p, /mail\.crevio-test\.dev/));
-p = await say('✨ Address on this domain');
+p = await tap(/mail\.crevio-test\.dev/);
+p = await tap(/Create address here/);
 p = await say('hello');
 step('own-domain address', p);
 const ownIb = store.findInboxByAddress('hello@mail.crevio-test.dev');
@@ -225,31 +244,30 @@ assert.equal((await post(dom.key, 'nobody@mail.crevio-test.dev')).status, 404);
 calls.length = 0;
 assert.equal((await post(dom.key)).status, 200);
 await new Promise((r) => setTimeout(r, 300));
-const note = calls.find((c) => c.method === 'sendMessage' && /New mail/.test(c.payload.text));
+const note = calls.find((c) => c.method === 'sendMessage' && /^🛰 <b>New mail/.test(c.payload.text));
 assert.ok(note?.payload.reply_markup.inline_keyboard.flat().some((b) => b.copy_text?.text === '482913'), 'push has OTP copy');
-console.log('✓ inbound mail → push (inline copy + open)');
+console.log('✓ inbound mail → push (copy + open)');
 
 p = await callback(note.payload.reply_markup.inline_keyboard.flat().find((b) => b.callback_data).callback_data);
 step('push → Open mail', p);
-assert.match(p.text, /482913/);
-assert.match(p.text, /href="https:\/\/github.com\/verify/);
-assert.ok(keys(p).includes('🖥 Open full email'));
-p = await say(key(p, /Attachments/));
-p = await say(key(p, /note\.txt/));
+assert.ok(find(/Copy 482913/).copy_text);
+assert.ok(find(/Verify/).url);
+assert.ok(find(/Open full email/).web_app);
+p = await tap(/Files/);
+p = await tap(/note\.txt/);
 assert.ok(calls.some((c) => c.method === 'sendDocument'), 'attachment delivered');
 console.log('✓ attachment download');
-p = await say('‹ Back to mail');
-p = await say('↩️ Reply');
+p = await tap(/Back to mail/);
+p = await tap(/Reply/);
 step('reply prefilled', p);
 p = await say('Thanks!');
-p = await say('🚀 Send now');
+p = await tap(/Send now/);
 assert.equal(worker.last.from.email, 'hello@mail.crevio-test.dev');
-assert.equal(worker.last.replyTo, undefined);
 console.log(`  direct: From ${worker.last.from.email} → ${worker.last.to}`);
 
 p = await say('📥 Inbox');
-p = await say(key(p, /GitHub/));
-p = await say('🗑 Delete mail');
+p = await tap(/GitHub/);
+p = await tap(/Delete/);
 assert.match(p.text, /nothing here yet/);
 step('delete mail', p);
 
@@ -257,13 +275,14 @@ p = await say('👤 Profile');
 assert.match(p.text, /Sent today <b>2/);
 step('profile after sends', p);
 
-p = await say('/stats');
+p = await callback('t:zzzz');
+step('expired button → fresh home', p);
 p = await say('random text');
 step('unknown text → home', p);
 
 p = await say('⚙️ Settings');
-p = await say('🧨 Erase all my data');
-p = await say('🧨 Yes, erase everything');
+p = await tap(/Erase all/);
+p = await tap(/Yes, erase/);
 step('wipe all', p);
 server.close();
 worker.close();

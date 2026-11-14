@@ -1,4 +1,4 @@
-// Crevio Email Worker. Deploy it on the Cloudflare account that owns your domain.
+// Crevio Mail Bot (@CrevioMailBot) Email Worker. Deploy it on the Cloudflare account that owns your domain.
 //  • Inbound: Email Routing → Catch-all → "Send to a Worker" → this worker. Each mail is forwarded to the bot.
 //  • Outbound: with a `send_email` binding named EMAIL, the bot can send mail from your domain through it.
 const BOT_URL = '__BOT_URL__';
@@ -19,7 +19,7 @@ export default {
     });
     if (res.status === 404) return message.setReject('Mailbox does not exist');
     if (res.status === 413) return message.setReject('Message too large');
-    if (!res.ok) throw new Error(`Crevio bot unavailable (${res.status})`); // sender's server will retry later
+    if (!res.ok) throw new Error(`Crevio Mail Bot unavailable (${res.status})`); // sender's server will retry later
   },
 
   async fetch(request, env) {

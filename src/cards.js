@@ -44,7 +44,7 @@ const clean = (s, fallback = '') => {
 const brand = () =>
   h('div', { alignItems: 'center', gap: 14 },
     h('div', { width: 22, height: 22, transform: 'rotate(45deg)', borderRadius: 5, backgroundImage: `linear-gradient(135deg, ${C.violet}, ${C.cyan})` }),
-    h('div', { fontFamily: 'Grotesk', fontWeight: 700, fontSize: 26, letterSpacing: 6, color: C.text }, 'CREVIO'),
+    h('div', { fontFamily: 'Grotesk', fontWeight: 700, fontSize: 26, letterSpacing: 6, color: C.text }, 'CREVIO MAIL'),
   );
 
 const frame = (...children) =>

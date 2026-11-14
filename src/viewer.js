@@ -63,7 +63,7 @@ export async function handleViewer(req, res, token) {
 
   const body = `
     <header>
-      <div class="brand">✦ CREVIO</div>
+      <div class="brand">✦ CREVIO MAIL</div>
       <h1>${esc(msg.subject || '(no subject)')}</h1>
       <div class="meta">
         <div><span>From</span> ${esc(msg.from?.name || '')} <em>${esc(msg.from?.address || '')}</em></div>
@@ -81,7 +81,7 @@ function shell(title, inner) {
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>${esc(title)} · Crevio</title>
+<title>${esc(title)} · Crevio Mail</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>

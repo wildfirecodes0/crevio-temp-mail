@@ -9,11 +9,11 @@ import { domainsFor, publicDomains, provider, providerLabel } from './providers/
 import { bodyText, extractCodes, extractActionLinks } from './extract.js';
 import { viewerUrl } from './viewer.js';
 import { LOCAL_RE, normalizeLocal } from './names.js';
-import { checkDomain, pingWorker, workerFiles } from './domains.js';
+import { checkDomain, pingWorker, workerFiles, txtHost } from './domains.js';
 import { sendMail, sendLimitFor, senderFor } from './send.js';
 import { welcomeCard, addressCard, profileCard } from './cards.js';
-import { present, btn, web, busy, screenOf, forget } from './router.js';
-import { within, esc, isEmail, isDomain, fmtSize, truncate } from './utils.js';
+import { present, act, url, webapp, copy, busy, screenOf, clearInput, resolveToken } from './router.js';
+import { within, esc, isEmail, isDomain, truncate } from './utils.js';
 
 const HTML = { parse_mode: 'HTML', link_preview_options: { is_disabled: true } };
 const isAdmin = (id) => config.adminIds.includes(Number(id));
@@ -23,47 +23,51 @@ export function analyse(msg) {
   return { body, codes: extractCodes(msg.subject, body), links: extractActionLinks(msg) };
 }
 
-// ── labels ───────────────────────────────────────────────────────────────
-const L = {
+// ── main menu (bottom reply keyboard, never changes) ─────────────────────
+const KB_VER = 4;
+const M = {
+  home: '🏠 Home',
   inbox: '📥 Inbox',
-  refresh: '🔄 Refresh',
   new: '✨ New Mail',
-  addresses: '🗂 Addresses',
   compose: '✉️ Compose',
-  timer: '💣 Timer',
+  addresses: '🗂 Addresses',
   domains: '🌐 Domains',
   profile: '👤 Profile',
   settings: '⚙️ Settings',
   help: '❔ Help',
-  menu: '🏠 Menu',
-  cancel: '✖ Cancel',
-  instant: '⚡ Instant address',
-  custom: '✍️ Custom name',
-  discard: '✖ Discard',
 };
+const mainKeyboard = {
+  keyboard: [
+    [{ text: M.home }, { text: M.inbox }, { text: M.new }],
+    [{ text: M.compose }, { text: M.addresses }, { text: M.domains }],
+    [{ text: M.profile }, { text: M.settings }, { text: M.help }],
+  ],
+  resize_keyboard: true,
+  is_persistent: true,
+  input_field_placeholder: 'Crevio Mail Bot',
+};
+
+/** The reply keyboard lives on a small anchor message, re-sent only when the menu layout changes. */
+async function ensureMenu(ctx, force = false) {
+  const user = store.getUser(ctx.from.id);
+  if (!user || (!force && user.kb_ver === KB_VER)) return;
+  const m = await ctx.api.sendMessage(ctx.chat.id, `✦ <b>${ui.BRAND}</b> · menu is ready below ⌨️`, { ...HTML, reply_markup: mainKeyboard });
+  if (user.anchor_msg) ctx.api.deleteMessage(ctx.chat.id, user.anchor_msg).catch(() => {});
+  store.setUser(user.id, { anchor_msg: m.message_id, kb_ver: KB_VER });
+}
 
 const drafts = new Map(); // userId → { inboxId, step, draft }
 const userOf = (ctx) => store.getUser(ctx.from.id);
 const activeOf = (ctx) => store.getActiveInbox(userOf(ctx));
+const counts = (list) => (list ? { total: list.length, unread: list.filter((m) => !m.seen).length } : null);
+const toast = (ctx, text, alert) => ctx.toast?.(text, alert);
 
 // ── screens ──────────────────────────────────────────────────────────────
 const S = {};
+const homeBtn = act('🏠 Home', (c) => S.home(c));
+const backRow = (back) => [back, homeBtn].filter(Boolean);
 
-function mainKeys(ib, counts) {
-  const inboxLabel = counts?.total ? `📥 Inbox · ${counts.total}${counts.unread ? ` (${counts.unread} new)` : ''}` : L.inbox;
-  return [
-    [btn(inboxLabel, (ctx) => S.inbox(ctx)), btn(L.refresh, (ctx) => S.home(ctx, { force: true }))],
-    [btn(L.new, (ctx) => S.picker(ctx)), btn(L.addresses, (ctx) => S.addresses(ctx))],
-    [btn(L.compose, (ctx) => S.compose(ctx)), btn(L.timer, (ctx) => S.timer(ctx))],
-    [btn(L.domains, (ctx) => S.domains(ctx)), btn(L.profile, (ctx) => S.profile(ctx))],
-    [btn(L.settings, (ctx) => S.settings(ctx)), btn(L.help, (ctx) => S.help(ctx))],
-  ];
-}
-
-const menuRow = (back) => [back, btn(L.menu, (ctx) => S.home(ctx))].filter(Boolean);
-
-S.problem = (ctx, kind, { extra, back } = {}) =>
-  present(ctx, { name: 'problem', text: ui.problem(kind, extra), keys: [menuRow(back)] });
+S.problem = (ctx, kind, { extra, back } = {}) => present(ctx, { name: 'problem', text: ui.problem(kind, extra), kb: [backRow(back)] });
 
 function fail(ctx, e, back) {
   if (e instanceof UserFacingError) return S.problem(ctx, e.message, { extra: e.code, back });
@@ -71,10 +75,20 @@ function fail(ctx, e, back) {
   return S.problem(ctx, 'down', { back });
 }
 
-const counts = (list) => (list ? { total: list.length, unread: list.filter((m) => !m.seen).length } : null);
+function dashboardScreen(ib, meta, c) {
+  const inboxLabel = c?.total ? `📥 Inbox · ${c.total}${c.unread ? `  (${c.unread} new)` : ''}` : '📥 Open inbox';
+  return {
+    name: 'home',
+    text: ui.dashboard(ib, { ...meta, total: c ? c.total : null, unread: c?.unread ?? 0 }),
+    kb: [
+      [copy('⧉ Copy address', ib.address)],
+      [act(inboxLabel, (x) => S.inbox(x, ib.id)), act('🔄', (x) => S.home(x, { force: true, toast: '🔄 Refreshed' }))],
+      [act('💣 Timer', (x) => S.timer(x)), act('🔁 Switch', (x) => S.addresses(x)), meta.route ? act('✉️ Send', (x) => S.compose(x, ib.id)) : null],
+    ],
+  };
+}
 
-S.home = async (ctx, { force = false } = {}) => {
-  forget(ctx.from.id);
+S.home = async (ctx, { force = false, fresh = false, toast: t } = {}) => {
   const user = userOf(ctx);
   const ib = store.getActiveInbox(user);
   if (!ib) {
@@ -83,12 +97,12 @@ S.home = async (ctx, { force = false } = {}) => {
       name: 'welcome',
       text: ui.welcome(ctx.from.first_name, n),
       photo: { key: `welcome:${n}`, buffer: () => welcomeCard(n) },
-      keys: [
-        [btn(L.instant, (c) => S.create(c, {}))],
-        [btn('🌐 Choose domain', (c) => S.picker(c)), btn(L.custom, (c) => S.custom(c))],
-        [btn(L.domains, (c) => S.domains(c)), btn(L.profile, (c) => S.profile(c)), btn(L.help, (c) => S.help(c))],
+      kb: [
+        [act('⚡ Instant address', (c) => S.create(c, {}))],
+        [act('🌐 Choose domain', (c) => S.picker(c)), act('✍️ Custom name', (c) => S.custom(c))],
+        [act('❔ How it works', (c) => S.help(c))],
       ],
-    });
+    }, { fresh });
   }
   const list = store.listInboxes(user.id);
   const meta = { index: list.findIndex((x) => x.id === ib.id) + 1, count: list.length, route: svc.sendRoute(ib) };
@@ -103,41 +117,54 @@ S.home = async (ctx, { force = false } = {}) => {
     if (msgs) pending = null;
     else msgs = cached?.list ?? null;
   }
-  const c = counts(msgs);
-  const m = await present(ctx, {
-    name: 'home',
-    text: ui.dashboard(ib, { ...meta, total: c ? c.total : null, unread: c?.unread ?? 0 }),
-    keys: mainKeys(ib, c),
-  });
-  // Slow provider: fill the numbers in as soon as they arrive.
-  pending?.then((fresh) => {
-    const f = counts(fresh);
-    ctx.api.editMessageText(m.chat.id, m.message_id, ui.dashboard(ib, { ...meta, ...f }), HTML).catch(() => {});
-  }).catch(() => {});
+  if (t) toast(ctx, t);
+  await present(ctx, dashboardScreen(ib, meta, counts(msgs)), { fresh });
+  // Slow provider: fill the numbers in as soon as they arrive (if the user is still on this screen).
+  pending
+    ?.then((list2) => {
+      if (screenOf(ctx.from.id)?.name !== 'home') return;
+      ctx.editPanel = true;
+      return present(ctx, dashboardScreen(ib, meta, counts(list2)));
+    })
+    .catch(() => {});
 };
 
-S.help = (ctx) => present(ctx, { name: 'help', text: ui.help(), keys: [[btn(L.new, (c) => S.picker(c)), btn(L.compose, (c) => S.compose(c))], menuRow()] });
+S.help = (ctx, opts) =>
+  present(ctx, {
+    name: 'help',
+    text: ui.help(),
+    kb: [[act('✨ New address', (c) => S.picker(c)), act('🌐 Domains', (c) => S.domains(c))], [homeBtn]],
+  }, opts);
 
 // ── create ───────────────────────────────────────────────────────────────
 const badge = { mine: '⭐ ', premium: '💎 ', public: '' };
+const PICK_PAGE = 12;
 
-S.picker = async (ctx, pendingLocal) => {
+S.picker = async (ctx, { page = 0, pendingLocal, fresh } = {}) => {
   const user = userOf(ctx);
-  if (!pendingLocal && store.countInboxes(user.id) >= config.maxInboxes) return S.problem(ctx, 'limit', { back: btn(L.addresses, (c) => S.addresses(c)) });
-  busy(ctx);
-  const domains = (await domainsFor(user.id)).slice(0, 60);
-  if (!domains.length) return S.problem(ctx, 'down');
-  const keys = [];
-  if (!pendingLocal) keys.push([btn(L.instant, (c) => S.create(c, {})), btn(L.custom, (c) => S.custom(c))]);
-  for (let i = 0; i < domains.length; i += 2) {
-    keys.push(
-      domains.slice(i, i + 2).map((d) =>
-        btn(`${badge[d.kind]}@${d.domain}`, (c) => S.create(c, { provider: d.provider, domain: d.domain, local: pendingLocal })),
-      ),
-    );
+  if (!pendingLocal && store.countInboxes(user.id) >= config.maxInboxes) {
+    return S.problem(ctx, 'limit', { back: act('🗂 Addresses', (c) => S.addresses(c)) });
   }
-  keys.push(pendingLocal ? [btn(L.cancel, (c) => S.home(c))] : menuRow());
-  return present(ctx, { name: 'picker', text: ui.picker(domains, { pendingLocal }), keys, placeholder: 'Pick a domain' });
+  busy(ctx);
+  const domains = await domainsFor(user.id);
+  if (!domains.length) return S.problem(ctx, 'down');
+  const pages = Math.ceil(domains.length / PICK_PAGE);
+  page = Math.min(Math.max(0, page), pages - 1);
+  const slice = domains.slice(page * PICK_PAGE, page * PICK_PAGE + PICK_PAGE);
+  const kb = [];
+  if (!pendingLocal) kb.push([act('⚡ Instant', (c) => S.create(c, {})), act('✍️ Custom name', (c) => S.custom(c))]);
+  for (let i = 0; i < slice.length; i += 2) {
+    kb.push(slice.slice(i, i + 2).map((d) => act(`${badge[d.kind]}@${d.domain}`, (c) => S.create(c, { provider: d.provider, domain: d.domain, local: pendingLocal }))));
+  }
+  if (pages > 1) {
+    kb.push([
+      page > 0 ? act('‹ Prev', (c) => S.picker(c, { page: page - 1, pendingLocal })) : null,
+      act(`${page + 1} / ${pages}`, (c) => toast(c, `${domains.length} domains`)),
+      page < pages - 1 ? act('Next ›', (c) => S.picker(c, { page: page + 1, pendingLocal })) : null,
+    ]);
+  }
+  kb.push(pendingLocal ? [act('✖ Cancel', (c) => S.home(c))] : [act('➕ Add my domain', (c) => S.addDomain(c)), homeBtn]);
+  return present(ctx, { name: 'picker', text: ui.picker(domains, { pendingLocal }), kb }, { fresh });
 };
 
 S.custom = (ctx, preset) => {
@@ -145,23 +172,23 @@ S.custom = (ctx, preset) => {
   return present(ctx, {
     name: 'custom',
     text: ui.askCustom(preset?.domain),
-    keys: [preset ? [btn('🎲 Random name', (c) => S.create(c, preset))] : null, [btn(L.cancel, (c) => S.home(c))]].filter(Boolean),
-    placeholder: 'e.g. shop-alerts',
+    kb: [preset ? [act('🎲 Random name', (c) => S.create(c, preset))] : null, [act('✖ Cancel', (c) => S.home(c))]],
     input: async (c, text) => {
       const local = normalizeLocal(text);
-      if (!LOCAL_RE.test(local) || local.length < 3) return S.problem(c, 'invalid', { back: btn('✍️ Try again', (x) => S.custom(x, preset)) });
-      return preset ? S.create(c, { ...preset, local }) : S.picker(c, local);
+      if (!LOCAL_RE.test(local) || local.length < 3) return S.problem(c, 'invalid', { back: act('✍️ Try again', (x) => S.custom(x, preset)) });
+      return preset ? S.create(c, { ...preset, local }) : S.picker(c, { pendingLocal: local });
     },
   });
 };
 
 S.create = async (ctx, opts) => {
+  toast(ctx, '✨ Creating…');
   busy(ctx);
   let ib;
   try {
     ib = await svc.createInbox(userOf(ctx), opts);
   } catch (e) {
-    return fail(ctx, e, btn(L.new, (c) => S.picker(c)));
+    return fail(ctx, e, act('✨ Pick another', (c) => S.picker(c)));
   }
   return present(ctx, {
     name: 'created',
@@ -170,182 +197,186 @@ S.create = async (ctx, opts) => {
       key: `addr:${ib.address}:${ib.expires_at || 0}`,
       buffer: () => addressCard({ address: ib.address, provider: ib.provider === 'own' ? 'custom domain' : providerLabel(ib.provider), timer: ui.timerShort(ib) }),
     },
-    keys: mainKeys(ib, { total: 0, unread: 0 }),
+    kb: [
+      [copy('⧉ Copy address', ib.address)],
+      [act('📥 Open inbox', (c) => S.inbox(c, ib.id)), act('💣 Set timer', (c) => S.timer(c))],
+      [homeBtn],
+    ],
   });
 };
 
 // ── inbox & mail ─────────────────────────────────────────────────────────
-S.inbox = async (ctx, inboxId, page = 0, { refresh = false } = {}) => {
+S.inbox = async (ctx, inboxId, { page = 0, refresh = false, fresh } = {}) => {
   const ib = inboxId ? store.getOwnedInbox(ctx.from.id, inboxId) : activeOf(ctx);
-  if (!ib) return S.home(ctx);
+  if (!ib) return S.home(ctx, { fresh });
   busy(ctx);
   let msgs;
   try {
     msgs = refresh ? await svc.fetchList(ib) : await svc.getList(ib, 5000);
   } catch (e) {
     console.warn(`[inbox] ${ib.address}: ${e.message}`);
-    return S.problem(ctx, 'down', { back: btn(L.refresh, (c) => S.inbox(c, ib.id, 0, { refresh: true })) });
+    return S.problem(ctx, 'down', { back: act('🔄 Retry', (c) => S.inbox(c, ib.id, { refresh: true })) });
   }
+  if (refresh) toast(ctx, msgs.length ? `🔄 ${msgs.length} mail${msgs.length === 1 ? '' : 's'}` : '🔄 Still empty');
   store.markSeen(ib.id, msgs.map((m) => m.id)).catch(() => {});
   const pages = Math.max(1, Math.ceil(msgs.length / ui.PAGE));
   page = Math.min(Math.max(0, page), pages - 1);
-  const keys = msgs.slice(page * ui.PAGE, page * ui.PAGE + ui.PAGE).map((m, i) => [btn(ui.inboxKey(m, page * ui.PAGE + i + 1), (c) => S.message(c, ib, m.id))]);
+  const kb = msgs.slice(page * ui.PAGE, page * ui.PAGE + ui.PAGE).map((m, i) => [act(ui.inboxKey(m, page * ui.PAGE + i + 1), (c) => S.message(c, ib, m.id))]);
+  if (!msgs.length) kb.push([copy('⧉ Copy address', ib.address)]);
   if (pages > 1) {
-    keys.push([
-      page > 0 ? btn('⬅️ Newer', (c) => S.inbox(c, ib.id, page - 1)) : null,
-      page < pages - 1 ? btn('Older ➡️', (c) => S.inbox(c, ib.id, page + 1)) : null,
-    ].filter(Boolean));
+    kb.push([
+      page > 0 ? act('‹ Newer', (c) => S.inbox(c, ib.id, { page: page - 1 })) : null,
+      act(`${page + 1} / ${pages}`, (c) => toast(c, `${msgs.length} mails`)),
+      page < pages - 1 ? act('Older ›', (c) => S.inbox(c, ib.id, { page: page + 1 })) : null,
+    ]);
   }
-  keys.push([btn(L.refresh, (c) => S.inbox(c, ib.id, page, { refresh: true })), btn(L.compose, (c) => S.compose(c, ib.id))], menuRow());
-  return present(ctx, { name: 'inbox', text: ui.inbox(ib, msgs, page, pages), keys, placeholder: 'Open a mail' });
+  kb.push([act('🔄 Refresh', (c) => S.inbox(c, ib.id, { page, refresh: true })), svc.sendRoute(ib) ? act('✉️ Compose', (c) => S.compose(c, ib.id)) : null]);
+  kb.push([homeBtn]);
+  return present(ctx, { name: 'inbox', text: ui.inbox(ib, msgs, page, pages), kb }, { fresh });
 };
 
-S.message = async (ctx, ib, msgId) => {
+S.message = async (ctx, ib, msgId, opts) => {
   busy(ctx);
   let msg;
   try {
     msg = await svc.getMessage(ib, msgId);
   } catch {
-    return S.problem(ctx, 'gone', { back: btn('‹ Inbox', (c) => S.inbox(c, ib.id)) });
+    return S.problem(ctx, 'gone', { back: act('‹ Inbox', (c) => S.inbox(c, ib.id)) });
   }
   svc.markRead(ib, msg.id).catch(() => {});
-  const url = viewerUrl(ib.id, msg.id);
+  const a = analyse(msg);
+  const view = viewerUrl(ib.id, msg.id);
   const att = msg.attachments || [];
   const canReply = svc.canSendFrom(ib) && msg.from?.address;
   return present(ctx, {
     name: 'message',
-    text: ui.message(ib, msg, analyse(msg)),
-    keys: [
-      url ? [web('🖥 Open full email', url)] : null,
-      [att.length ? btn(`📎 Attachments · ${att.length}`, (c) => S.attachments(c, ib, msg)) : null, canReply ? btn('↩️ Reply', (c) => S.reply(c, ib, msg)) : null].filter(Boolean),
-      [btn('🗑 Delete mail', async (c) => {
+    text: ui.message(ib, msg, a),
+    kb: [
+      a.codes.map((code) => copy(`⧉ Copy ${code}`, code)),
+      a.links.map((l) => url(l.label, l.url)),
+      view ? [webapp('🖥 Open full email', view)] : null,
+      [att.length ? act(`📎 Files · ${att.length}`, (c) => S.attachments(c, ib, msg)) : null, canReply ? act('↩️ Reply', (c) => S.reply(c, ib, msg)) : null],
+      [act('🗑 Delete', async (c) => {
         await svc.deleteMessage(ib, msg.id);
+        toast(c, '🗑 Deleted');
         return S.inbox(c, ib.id);
-      }), btn('‹ Inbox', (c) => S.inbox(c, ib.id))],
-      menuRow(),
-    ].filter((r) => r && r.length),
-  });
+      }), act('‹ Inbox', (c) => S.inbox(c, ib.id))],
+    ],
+  }, opts);
 };
 
 S.attachments = (ctx, ib, msg) => {
   const downloadable = provider(ib.provider).caps.attachments;
-  const keys = downloadable
-    ? (msg.attachments || []).slice(0, 10).map((a, i) => [btn(`📎 ${i + 1} · ${truncate(a.filename || 'file', 28)}`, (c) => S.download(c, ib, msg, a))])
-    : [];
-  keys.push([btn('‹ Back to mail', (c) => S.message(c, ib, msg.id)), btn(L.menu, (c) => S.home(c))]);
-  return present(ctx, { name: 'attachments', text: ui.attachments(msg, downloadable), keys });
+  const kb = downloadable ? (msg.attachments || []).slice(0, 10).map((a, i) => [act(`⬇️ ${i + 1} · ${truncate(a.filename || 'file', 30)}`, (c) => S.download(c, ib, msg, a))]) : [];
+  kb.push([act('‹ Back to mail', (c) => S.message(c, ib, msg.id))]);
+  return present(ctx, { name: 'attachments', text: ui.attachments(msg, downloadable), kb });
 };
 
 S.download = async (ctx, ib, msg, a) => {
-  if (a.size > 20 * 1024 * 1024) return ctx.reply('📎 That file is larger than Telegram allows (20 MB).');
+  if (a.size > 20 * 1024 * 1024) return toast(ctx, 'Too large for Telegram (20 MB max)', true);
+  toast(ctx, '⬇️ Fetching…');
   busy(ctx, 'upload_document');
   try {
     const buf = await svc.downloadAttachment(ib, msg.id, a);
     await ctx.replyWithDocument(new InputFile(buf, a.filename || 'attachment'), { caption: `📎 from <i>${esc(msg.subject || 'mail')}</i>`, parse_mode: 'HTML' });
   } catch (e) {
     console.warn('[attachment]', e.message);
-    await ctx.reply('Couldn’t download that attachment. Try again in a moment.');
+    toast(ctx, 'Couldn’t download that attachment', true);
   }
 };
 
 // ── addresses / timer / settings ─────────────────────────────────────────
-S.addresses = (ctx) => {
+S.addresses = (ctx, opts) => {
   const user = userOf(ctx);
   const list = store.listInboxes(user.id);
   const active = store.getActiveInbox(user);
-  const keys = list.map((ib) => [
-    btn(`${ib.id === active?.id ? '◉' : '○'} ${ib.address}`, (c) => {
+  const kb = list.map((ib) => [
+    act(`${ib.id === active?.id ? '◉' : '○'}  ${ib.address}`, (c) => {
       store.setUser(c.from.id, { active_inbox: ib.id });
+      toast(c, `◉ ${ib.address}`);
       return S.home(c);
     }),
   ]);
-  keys.push([list.length < config.maxInboxes ? btn(L.new, (c) => S.picker(c)) : null, active ? btn('🗑 Delete active', (c) => S.confirmDelete(c, active)) : null].filter(Boolean));
-  keys.push(menuRow());
-  return present(ctx, { name: 'addresses', text: ui.addresses(list, active?.id), keys, placeholder: 'Switch address' });
+  kb.push([list.length < config.maxInboxes ? act('✨ New', (c) => S.picker(c)) : null, active ? act('🗑 Delete active', (c) => S.confirmDelete(c, active)) : null]);
+  kb.push([homeBtn]);
+  return present(ctx, { name: 'addresses', text: ui.addresses(list, active?.id), kb }, opts);
 };
 
 S.confirmDelete = (ctx, ib) =>
   present(ctx, {
     name: 'confirm-delete',
     text: ui.confirmDelete(ib),
-    keys: [[btn('🗑 Yes, delete it', async (c) => {
+    kb: [[act('🗑 Yes, delete', async (c) => {
       await svc.destroyInbox(ib);
+      toast(c, '🗑 Address deleted');
       return store.countInboxes(c.from.id) ? S.addresses(c) : S.home(c);
-    }), btn('✖ Keep it', (c) => S.addresses(c))]],
+    }), act('✖ Keep it', (c) => S.addresses(c))]],
   });
 
 S.timer = (ctx) => {
   const ib = activeOf(ctx);
   if (!ib) return S.home(ctx);
-  const current = ib.expires_at ? null : 0;
-  const set = (sec) => (c) => {
+  const set = (sec, label) => (c) => {
     store.setExpiry(ib.id, sec ? Date.now() + sec * 1000 : null);
-    return S.home(c);
+    return S.home(c, { toast: sec ? `💣 Armed: ${label}` : '♾ Timer off' });
   };
-  const label = (sec, text) => `${sec === current ? '✓ ' : ''}${sec ? '⏱' : '♾'} ${text}`;
+  const opt = (sec, label) => act(`${!sec && !ib.expires_at ? '✓ ' : ''}${sec ? '⏱' : '♾'} ${label}`, set(sec, label));
   return present(ctx, {
     name: 'timer',
     text: ui.timer(ib),
-    keys: [
-      [btn(label(600, '10 min'), set(600)), btn(label(3600, '1 hour'), set(3600))],
-      [btn(label(86400, '24 hours'), set(86400)), btn(label(604800, '7 days'), set(604800))],
-      [btn(label(0, 'Never'), set(0))],
-      menuRow(),
-    ],
+    kb: [[opt(600, '10 min'), opt(3600, '1 hour')], [opt(86400, '24 hours'), opt(604800, '7 days')], [opt(0, 'Never')], [act('‹ Back', (c) => S.home(c))]],
   });
 };
 
-S.settings = (ctx) => {
+S.settings = (ctx, opts) => {
   const user = userOf(ctx);
   return present(ctx, {
     name: 'settings',
     text: ui.settings(user),
-    keys: [
-      [btn(user.notify ? '🔔 Notifications: ON' : '🔕 Notifications: OFF', (c) => {
+    kb: [
+      [act(user.notify ? '🔔 Notifications: ON' : '🔕 Notifications: OFF', (c) => {
         store.setUser(user.id, { notify: user.notify ? 0 : 1 });
+        toast(c, user.notify ? '🔔 On' : '🔕 Muted');
         return S.settings(c);
       })],
-      [btn(`💣 Default timer: ${ui.ttlLabel(user.default_ttl)}`, (c) => {
+      [act(`💣 Default timer: ${ui.ttlLabel(user.default_ttl)}  ›`, (c) => {
         const i = ui.TIMERS.findIndex(([s]) => s === Number(user.default_ttl));
         store.setUser(user.id, { default_ttl: ui.TIMERS[(i + 1) % ui.TIMERS.length][0] });
         return S.settings(c);
       })],
-      [btn('🧨 Erase all my data', (c) => S.wipe(c))],
-      menuRow(),
+      [act('🧨 Erase all my data', (c) => S.wipe(c))],
+      [homeBtn],
     ],
-  });
+  }, opts);
 };
 
 S.wipe = (ctx) =>
   present(ctx, {
     name: 'wipe',
     text: ui.confirmWipe(),
-    keys: [[btn('🧨 Yes, erase everything', async (c) => {
+    kb: [[act('🧨 Yes, erase all', async (c) => {
       const uid = c.from.id;
       const list = store.listInboxes(uid);
+      const panel = store.getUser(uid)?.panel_msg;
+      const anchor = store.getUser(uid)?.anchor_msg;
       for (const d of store.userDomains(uid)) store.removeDomain(d.id);
       store.deleteUser(uid);
       Promise.allSettled(list.map((ib) => provider(ib.provider).destroy(ib))).catch(() => {});
       store.touchUser(c.from);
-      return present(c, { name: 'wiped', text: `${ui.H()}\n\n🧹 All clean. Nothing of yours is left here.`, keys: [[btn(L.instant, (x) => S.create(x, {}))], [btn(L.menu, (x) => S.home(x))]] });
-    }), btn('✖ Cancel', (c) => S.settings(c))]],
+      store.setUser(uid, { panel_msg: panel, anchor_msg: anchor, kb_ver: KB_VER });
+      return present(c, { name: 'wiped', text: `${ui.H()}\n\n🧹 All clean. Nothing of yours is left here.`, kb: [[act('⚡ Start fresh', (x) => S.create(x, {}))]] });
+    }), act('✖ Cancel', (c) => S.settings(c))]],
   });
 
 // ── profile ──────────────────────────────────────────────────────────────
-S.profile = async (ctx) => {
+S.profile = async (ctx, opts) => {
   busy(ctx, 'upload_photo');
   const user = userOf(ctx);
   const ib = store.getActiveInbox(user);
   const route = svc.sendRoute(ib);
   const domainCount = (await domainsFor(user.id)).length;
   const sentToday = await within(store.sentLast24h(user.id), 1500, 0);
-  const stats = {
-    generated: user.generated || 0,
-    live: store.countInboxes(user.id),
-    received: user.received || 0,
-    sent: user.sent || 0,
-    disposed: user.disposed || 0,
-  };
+  const stats = { generated: user.generated || 0, live: store.countInboxes(user.id), received: user.received || 0, sent: user.sent || 0, disposed: user.disposed || 0 };
   const joined = new Date(Number(user.created_at)).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
   return present(ctx, {
     name: 'profile',
@@ -354,22 +385,32 @@ S.profile = async (ctx) => {
       key: `prof:${user.id}:${user.first_name}:${user.username}:${JSON.stringify(stats)}:${domainCount}`,
       buffer: () => profileCard({ name: user.first_name, username: user.username, id: user.id, joined, stats, domains: domainCount }),
     },
-    keys: [[btn(L.domains, (c) => S.domains(c)), btn(L.addresses, (c) => S.addresses(c))], [btn(L.settings, (c) => S.settings(c)), btn(L.menu, (c) => S.home(c))]],
-  });
+    kb: [
+      [copy('⧉ Copy my ID', String(user.id))],
+      [act('🌐 My domains', (c) => S.domains(c)), act('🗂 Addresses', (c) => S.addresses(c))],
+      [act('⚙️ Settings', (c) => S.settings(c)), homeBtn],
+    ],
+  }, opts);
 };
 
 // ── domains ──────────────────────────────────────────────────────────────
 const canManage = (ctx, d) => d && (Number(d.owner_id) === ctx.from.id || isAdmin(ctx.from.id));
 
-S.domains = async (ctx) => {
+S.domains = async (ctx, opts) => {
   busy(ctx);
   const uid = ctx.from.id;
   const mine = store.userDomains(uid);
   const allowAdd = config.allowUserDomains || isAdmin(uid);
-  const keys = mine.map((d) => [btn(`${d.verified ? '✅' : '⏳'} ${d.domain}`, (c) => S.domain(c, d.id))]);
-  keys.push([btn(L.new, (c) => S.picker(c)), allowAdd ? btn('➕ Add my domain', (c) => S.addDomain(c)) : null].filter(Boolean));
-  keys.push(menuRow());
-  return present(ctx, { name: 'domains', text: ui.domainsHub(await domainsFor(uid), mine, { allowAdd }), keys });
+  return present(ctx, {
+    name: 'domains',
+    text: ui.domainsHub(await domainsFor(uid), mine, { allowAdd }),
+    kb: [
+      [act('✨ Create an address', (c) => S.picker(c))],
+      ...mine.map((d) => [act(`${d.verified ? '✅' : '⏳'} ${d.domain}  ›`, (c) => S.domain(c, d.id))]),
+      allowAdd ? [act('➕ Add my domain', (c) => S.addDomain(c))] : null,
+      [homeBtn],
+    ],
+  }, opts);
 };
 
 S.addDomain = (ctx) => {
@@ -377,15 +418,14 @@ S.addDomain = (ctx) => {
   return present(ctx, {
     name: 'add-domain',
     text: ui.askDomain(),
-    keys: [[btn(L.cancel, (c) => S.domains(c))]],
-    placeholder: 'example.com',
+    kb: [[act('✖ Cancel', (c) => S.domains(c))]],
     input: async (c, text) => {
       const uid = c.from.id;
       const name = text.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
-      if (!isDomain(name)) return S.problem(c, 'baddomain', { back: btn('✍️ Try again', (x) => S.addDomain(x)) });
+      if (!isDomain(name)) return S.problem(c, 'baddomain', { back: act('✍️ Try again', (x) => S.addDomain(x)) });
       const existing = store.findDomain(name);
       if ((await publicDomains()).some((d) => d.domain === name) || (existing?.verified && Number(existing.owner_id) !== uid)) {
-        return S.problem(c, 'domaintaken', { back: btn(L.domains, (x) => S.domains(x)) });
+        return S.problem(c, 'domaintaken', { back: act('🌐 Domains', (x) => S.domains(x)) });
       }
       let d = existing && Number(existing.owner_id) === uid ? existing : null;
       if (!d) {
@@ -397,29 +437,36 @@ S.addDomain = (ctx) => {
   });
 };
 
-S.domain = async (ctx, id) => {
+S.domain = async (ctx, id, { checked } = {}) => {
   const d = store.getDomain(id);
   if (!canManage(ctx, d)) return S.domains(ctx);
   busy(ctx);
   const check = await checkDomain(d).catch(() => null);
+  if (checked) toast(ctx, check?.txtOk ? '✅ TXT record found' : '⏳ TXT record not found yet');
   const fresh = store.getDomain(id);
   const relay = svc.relayDomain()?.id === fresh.id;
-  const keys = [
-    [btn('🔄 Check again', (c) => S.domain(c, id)), btn('📄 Worker files', (c) => S.workerFiles(c, fresh))],
-    [btn(fresh.worker_url ? '🔗 Change worker URL' : '🔗 Set worker URL', (c) => S.workerUrl(c, fresh))],
-  ];
-  if (fresh.verified) keys.push([btn('✨ Address on this domain', (c) => S.custom(c, { provider: 'own', domain: fresh.domain }))]);
-  if (isAdmin(ctx.from.id)) {
-    keys.push([btn(fresh.public ? '🔒 Make private' : '💎 Share with everyone', (c) => {
-      store.setDomain(fresh.id, { public: fresh.public ? 0 : 1 });
-      return S.domain(c, id);
-    })]);
-  }
-  keys.push([btn('🗑 Remove domain', (c) => S.removeDomain(c, fresh)), btn('‹ Domains', (c) => S.domains(c))]);
-  return present(ctx, { name: 'domain', text: ui.domainManage(fresh, check, { botUrl: config.publicUrl, relay }), keys });
+  return present(ctx, {
+    name: 'domain',
+    text: ui.domainManage(fresh, check, { botUrl: config.publicUrl, relay }),
+    kb: [
+      fresh.verified ? null : [copy('⧉ TXT name', txtHost(fresh.domain)), copy('⧉ TXT value', config.verifyToken(fresh.domain))],
+      [act('🔄 Check again', (c) => S.domain(c, id, { checked: true })), act('📄 Worker files', (c) => S.workerFiles(c, fresh))],
+      [act(fresh.worker_url ? '🔗 Change worker URL' : '🔗 Set worker URL', (c) => S.workerUrl(c, fresh))],
+      fresh.verified ? [act('✨ Create address here', (c) => S.custom(c, { provider: 'own', domain: fresh.domain }))] : null,
+      isAdmin(ctx.from.id)
+        ? [act(fresh.public ? '🔒 Make private' : '💎 Share with everyone', (c) => {
+            store.setDomain(fresh.id, { public: fresh.public ? 0 : 1 });
+            toast(c, fresh.public ? '💎 Shared with everyone' : '🔒 Private');
+            return S.domain(c, id);
+          })]
+        : null,
+      [act('🗑 Remove', (c) => S.removeDomain(c, fresh)), act('‹ Domains', (c) => S.domains(c))],
+    ],
+  });
 };
 
 S.workerFiles = async (ctx, d) => {
+  toast(ctx, '📄 Sending files…');
   busy(ctx, 'upload_document');
   const { js, toml } = await workerFiles(d);
   await ctx.replyWithDocument(new InputFile(Buffer.from(js), 'crevio-worker.js'), {
@@ -445,17 +492,16 @@ S.workerUrl = (ctx, d) =>
   present(ctx, {
     name: 'worker-url',
     text: ui.askWorkerUrl(d),
-    keys: [[btn(L.cancel, (c) => S.domain(c, d.id))]],
-    placeholder: 'https://….workers.dev',
+    kb: [[act('✖ Cancel', (c) => S.domain(c, d.id))]],
     input: async (c, text) => {
-      let url;
+      let u;
       try {
-        url = new URL(text.startsWith('http') ? text : `https://${text}`);
+        u = new URL(text.startsWith('http') ? text : `https://${text}`);
       } catch {}
-      if (!url || url.protocol !== 'https:') return S.problem(c, 'badurl', { back: btn('✍️ Try again', (x) => S.workerUrl(x, d)) });
+      if (!u || u.protocol !== 'https:') return S.problem(c, 'badurl', { back: act('✍️ Try again', (x) => S.workerUrl(x, d)) });
       busy(c);
-      const ping = await pingWorker(url.origin, d.key);
-      if (ping.ok) store.setDomain(d.id, { worker_url: url.origin, can_send: ping.canSend ? 1 : 0 });
+      const ping = await pingWorker(u.origin, d.key);
+      if (ping.ok) store.setDomain(d.id, { worker_url: u.origin, can_send: ping.canSend ? 1 : 0 });
       return S.domain(c, d.id);
     },
   });
@@ -465,26 +511,30 @@ S.removeDomain = (ctx, d) => {
   return present(ctx, {
     name: 'remove-domain',
     text: ui.confirmRemoveDomain(d, onIt.length),
-    keys: [[btn('🗑 Yes, remove it', async (c) => {
+    kb: [[act('🗑 Yes, remove', async (c) => {
       for (const ib of onIt) await svc.destroyInbox(ib, { reason: 'domain removed' });
       store.removeDomain(d.id);
+      toast(c, '🗑 Domain removed');
       return S.domains(c);
-    }), btn('✖ Keep it', (c) => S.domain(c, d.id))]],
+    }), act('✖ Keep it', (c) => S.domain(c, d.id))]],
   });
 };
 
 // ── compose ──────────────────────────────────────────────────────────────
-const discard = btn(L.discard, (c) => {
+const discardBtn = act('✖ Discard', (c) => {
   drafts.delete(c.from.id);
+  toast(c, 'Draft discarded');
   return S.home(c);
 });
 
-S.compose = (ctx, inboxId) => {
+S.compose = (ctx, inboxId, opts) => {
   const ib = inboxId ? store.getOwnedInbox(ctx.from.id, inboxId) : activeOf(ctx);
-  if (!ib) return S.home(ctx);
-  if (!svc.sendRoute(ib)) return present(ctx, { name: 'no-send', text: ui.composeUnavailable(isAdmin(ctx.from.id)), keys: [[btn(L.domains, (c) => S.domains(c))], menuRow()] });
+  if (!ib) return S.home(ctx, opts);
+  if (!svc.sendRoute(ib)) {
+    return present(ctx, { name: 'no-send', text: ui.composeUnavailable(isAdmin(ctx.from.id)), kb: [[act('🌐 Domains', (c) => S.domains(c)), homeBtn]] }, opts);
+  }
   drafts.set(ctx.from.id, { inboxId: ib.id, draft: { attachments: [] } });
-  return S.composeStep(ctx, 'to');
+  return S.composeStep(ctx, 'to', opts);
 };
 
 S.pickSender = (ctx) => {
@@ -492,38 +542,38 @@ S.pickSender = (ctx) => {
   return present(ctx, {
     name: 'pick-sender',
     text: '✉️ <b>Send from which address?</b>',
-    keys: [...list.map((ib) => [btn(`✉ ${ib.address}`, (c) => {
-      const st = drafts.get(c.from.id);
-      if (st) st.inboxId = ib.id;
-      return st ? S.composeStep(c, st.draft.to ? 'preview' : 'to') : S.compose(c, ib.id);
-    })]), [discard]],
+    kb: [
+      ...list.map((ib) => [act(`✉ ${ib.address}`, (c) => {
+        const st = drafts.get(c.from.id);
+        if (!st) return S.compose(c, ib.id);
+        st.inboxId = ib.id;
+        return S.composeStep(c, st.draft.to && st.draft.text ? 'preview' : st.step || 'to');
+      })]),
+      [discardBtn],
+    ],
   });
 };
 
-const fileInput = async (ctx) => {
+async function fileInput(ctx) {
   const st = drafts.get(ctx.from.id);
-  if (!st) return S.home(ctx);
+  if (!st) return S.home(ctx, { fresh: true });
   const doc = ctx.message.document;
   const photo = ctx.message.photo?.at(-1);
   const size = doc?.file_size || photo?.file_size || 0;
   const total = st.draft.attachments.reduce((s, a) => s + a.size, 0);
-  if (size > 10 * 1024 * 1024 || total + size > 15 * 1024 * 1024) return ctx.reply('📎 Too large. Attachments are limited to 15 MB in total.');
+  ctx.deleteMessage().catch(() => {});
+  if (size > 10 * 1024 * 1024 || total + size > 15 * 1024 * 1024) return S.problem(ctx, 'toobig', { back: act('‹ Back to draft', (c) => S.composeStep(c, st.step)) });
   busy(ctx);
   const file = await ctx.api.getFile(doc?.file_id || photo.file_id);
   const res = await fetch(`https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`);
   const buf = Buffer.from(await res.arrayBuffer());
-  st.draft.attachments.push({
-    filename: doc?.file_name || `photo-${st.draft.attachments.length + 1}.jpg`,
-    type: doc?.mime_type || 'image/jpeg',
-    size: buf.length,
-    content: buf.toString('base64'),
-  });
+  st.draft.attachments.push({ filename: doc?.file_name || `photo-${st.draft.attachments.length + 1}.jpg`, type: doc?.mime_type || 'image/jpeg', size: buf.length, content: buf.toString('base64') });
   if (ctx.message.caption && !st.draft.text) st.draft.text = ctx.message.caption;
-  ctx.deleteMessage().catch(() => {});
+  ctx.editPanel = true;
   return S.composeStep(ctx, st.draft.to && st.draft.text ? 'preview' : st.step);
-};
+}
 
-S.composeStep = async (ctx, step) => {
+S.composeStep = async (ctx, step, opts) => {
   const uid = ctx.from.id;
   const st = drafts.get(uid);
   const ib = st && store.getOwnedInbox(uid, st.inboxId);
@@ -531,40 +581,37 @@ S.composeStep = async (ctx, step) => {
   const sender = senderFor(ib);
   st.step = step;
   const d = st.draft;
-  const others = store.listInboxes(uid).filter((x) => x.id !== ib.id && svc.sendRoute(x)).length > 0;
+  const others = store.listInboxes(uid).some((x) => x.id !== ib.id && svc.sendRoute(x));
 
   if (step === 'preview') {
-    const user = userOf(ctx);
     return present(ctx, {
       name: 'compose-preview',
-      text: ui.composePreview(d, ib, sender, { sentToday: await within(store.sentLast24h(uid), 1500, 0), limit: sendLimitFor(user, ib) }),
-      keys: [
-        [btn('🚀 Send now', (c) => S.send(c))],
-        [btn('✏️ Recipient', (c) => S.composeStep(c, 'to')), btn('✏️ Subject', (c) => S.composeStep(c, 'subject')), btn('✏️ Message', (c) => S.composeStep(c, 'body'))],
-        [others ? btn('🔁 Change sender', (c) => S.pickSender(c)) : null, discard].filter(Boolean),
+      text: ui.composePreview(d, ib, sender, { sentToday: await within(store.sentLast24h(uid), 1500, 0), limit: sendLimitFor(userOf(ctx), ib) }),
+      kb: [
+        [act('🚀 Send now', (c) => S.send(c))],
+        [act('✏️ To', (c) => S.composeStep(c, 'to')), act('✏️ Subject', (c) => S.composeStep(c, 'subject')), act('✏️ Message', (c) => S.composeStep(c, 'body'))],
+        [others ? act('🔁 Sender', (c) => S.pickSender(c)) : null, discardBtn],
       ],
       file: fileInput,
-    });
+    }, opts);
   }
-
-  const keys = [];
-  if (step === 'subject') keys.push([btn('⏭ No subject', (c) => {
-    d.subject = '';
-    return S.composeStep(c, d.text ? 'preview' : 'body');
-  })]);
-  if (step === 'body' && d.text) keys.push([btn('👀 Preview', (c) => S.composeStep(c, 'preview'))]);
-  keys.push([step === 'to' && others ? btn('🔁 Change sender', (c) => S.pickSender(c)) : null, discard].filter(Boolean));
 
   return present(ctx, {
     name: `compose-${step}`,
     text: ui.composeAsk(step, d, ib, sender),
-    keys,
-    placeholder: { to: 'name@example.com', subject: 'Subject', body: 'Write your message…' }[step],
+    kb: [
+      step === 'subject' ? [act('⏭ No subject', (c) => {
+        d.subject = '';
+        return S.composeStep(c, d.text ? 'preview' : 'body');
+      })] : null,
+      step === 'body' && d.text ? [act('👀 Preview', (c) => S.composeStep(c, 'preview'))] : null,
+      [step === 'to' && others ? act('🔁 Change sender', (c) => S.pickSender(c)) : null, discardBtn],
+    ],
     file: step === 'body' ? fileInput : null,
     input: async (c, text) => {
       if (step === 'to') {
         const list = text.split(/[,\s;]+/).filter(Boolean);
-        if (!list.length || list.length > 10 || !list.every(isEmail)) return S.problem(c, 'badto', { back: btn('✍️ Try again', (x) => S.composeStep(x, 'to')) });
+        if (!list.length || list.length > 10 || !list.every(isEmail)) return S.problem(c, 'badto', { back: act('✍️ Try again', (x) => S.composeStep(x, 'to')) });
         d.to = list.join(', ');
         return S.composeStep(c, d.text ? 'preview' : 'subject');
       }
@@ -575,7 +622,7 @@ S.composeStep = async (ctx, step) => {
       d.text = c.message.text.slice(0, 20_000);
       return S.composeStep(c, 'preview');
     },
-  });
+  }, opts);
 };
 
 S.reply = (ctx, ib, msg) => {
@@ -588,54 +635,34 @@ S.send = async (ctx) => {
   const st = drafts.get(ctx.from.id);
   const ib = st && store.getOwnedInbox(ctx.from.id, st.inboxId);
   if (!ib || !st.draft.to || !st.draft.text) return S.home(ctx);
+  toast(ctx, '🚀 Sending…');
   busy(ctx);
   try {
     await sendMail(userOf(ctx), ib, st.draft);
   } catch (e) {
-    return fail(ctx, e, btn('‹ Back to draft', (c) => S.composeStep(c, 'preview')));
+    return fail(ctx, e, act('‹ Back to draft', (c) => S.composeStep(c, 'preview')));
   }
   drafts.delete(ctx.from.id);
   return present(ctx, {
     name: 'sent',
     text: ui.sent(st.draft, senderFor(ib)),
-    keys: [[btn('✉️ Write another', (c) => S.compose(c, ib.id))], ...mainKeys(ib, counts(svc.cachedList(ib.id)?.list))],
+    kb: [[act('✉️ Write another', (c) => S.compose(c, ib.id)), homeBtn]],
   });
 };
 
-// ── global fallbacks (work from any screen, and after a restart) ─────────
-const GLOBAL = [
-  [/^📥 Inbox/, (c) => S.inbox(c)],
-  [L.refresh, (c) => S.home(c, { force: true })],
-  [L.new, (c) => S.picker(c)],
-  [L.addresses, (c) => S.addresses(c)],
-  [L.compose, (c) => S.compose(c)],
-  [L.timer, (c) => S.timer(c)],
-  [L.domains, (c) => S.domains(c)],
-  [L.profile, (c) => S.profile(c)],
-  [L.settings, (c) => S.settings(c)],
-  [L.help, (c) => S.help(c)],
-  [L.instant, (c) => S.create(c, {})],
-  [L.custom, (c) => S.custom(c)],
-  [/^(?:⭐ |💎 )?@([a-z0-9.-]+\.[a-z]{2,})$/i, async (c, m) => {
-    const d = (await domainsFor(c.from.id)).find((x) => x.domain === m[1].toLowerCase());
-    return d ? S.create(c, { provider: d.provider, domain: d.domain }) : S.picker(c);
-  }],
-  [/^[◉○] (\S+@\S+)$/, (c, m) => {
-    const ib = store.listInboxes(c.from.id).find((x) => x.address === m[1]);
-    if (ib) store.setUser(c.from.id, { active_inbox: ib.id });
-    return S.home(c);
-  }],
-];
-
-function globalMatch(text) {
-  for (const [pat, fn] of GLOBAL) {
-    if (typeof pat === 'string' ? pat === text : pat.test(text)) {
-      const m = typeof pat === 'string' ? null : text.match(pat);
-      return (c) => fn(c, m);
-    }
-  }
-  return null;
-}
+// ── main-menu taps (and legacy labels from older keyboards) ──────────────
+const MENU = new Map([
+  [M.home, (c) => S.home(c, { fresh: true })],
+  [M.inbox, (c) => S.inbox(c, null, { fresh: true })],
+  [M.new, (c) => S.picker(c, { fresh: true })],
+  [M.compose, (c) => S.compose(c, null, { fresh: true })],
+  [M.addresses, (c) => S.addresses(c, { fresh: true })],
+  [M.domains, (c) => S.domains(c, { fresh: true })],
+  [M.profile, (c) => S.profile(c, { fresh: true })],
+  [M.settings, (c) => S.settings(c, { fresh: true })],
+  [M.help, (c) => S.help(c, { fresh: true })],
+]);
+const menuAction = (text) => MENU.get(text) ?? (/^📥 Inbox/.test(text) ? MENU.get(M.inbox) : /^(🏠 Menu|🔄 Refresh|💣 Timer)$/.test(text) ? MENU.get(M.home) : null);
 
 // ── bot ──────────────────────────────────────────────────────────────────
 export function createBot() {
@@ -643,31 +670,53 @@ export function createBot() {
   bot.api.config.use(autoRetry({ maxRetryAttempts: 2, maxDelaySeconds: 8 }));
 
   bot.use((ctx, next) => (ctx.chat?.type === 'private' ? next() : undefined));
-  bot.use((ctx, next) => {
+  bot.use(async (ctx, next) => {
     if (!ctx.from || ctx.from.is_bot) return;
     store.touchUser(ctx.from);
+    if (ctx.message) await ensureMenu(ctx).catch(() => {});
     return next();
   });
 
+  // Every inline tap is acknowledged at once; handlers may show a toast.
+  bot.on('callback_query', async (ctx, next) => {
+    let answered = false;
+    ctx.toast = (text = '', alert = false) => {
+      if (answered) return;
+      answered = true;
+      return ctx.answerCallbackQuery({ text, show_alert: alert }).catch(() => {});
+    };
+    const t = setTimeout(() => ctx.toast(), 150);
+    try {
+      await next();
+    } finally {
+      clearTimeout(t);
+      ctx.toast();
+    }
+  });
+
   // commands
-  bot.command('start', (ctx) => {
+  bot.command('start', async (ctx) => {
     ctx.deleteMessage().catch(() => {});
-    return S.home(ctx);
+    await ensureMenu(ctx, true);
+    return S.home(ctx, { fresh: true });
   });
   const cmd = (name, fn) =>
     bot.command(name, (ctx) => {
       ctx.deleteMessage().catch(() => {});
       return fn(ctx);
     });
-  cmd(['menu', 'home'], (c) => S.home(c));
+  cmd(['menu', 'home'], async (c) => {
+    await ensureMenu(c, true);
+    return S.home(c, { fresh: true });
+  });
   cmd('new', (c) => S.create(c, {}));
-  cmd('inbox', (c) => S.inbox(c));
-  cmd('compose', (c) => S.compose(c));
-  cmd('domains', (c) => S.domains(c));
-  cmd('profile', (c) => S.profile(c));
-  cmd('addresses', (c) => S.addresses(c));
-  cmd('settings', (c) => S.settings(c));
-  cmd('help', (c) => S.help(c));
+  cmd('inbox', MENU.get(M.inbox));
+  cmd('compose', MENU.get(M.compose));
+  cmd('domains', MENU.get(M.domains));
+  cmd('profile', MENU.get(M.profile));
+  cmd('addresses', MENU.get(M.addresses));
+  cmd('settings', MENU.get(M.settings));
+  cmd('help', MENU.get(M.help));
 
   // admin
   bot.command('stats', async (ctx) => {
@@ -676,7 +725,7 @@ export function createBot() {
     const relay = svc.relayDomain();
     await ctx.reply(
       [
-        '📊 <b>Crevio stats</b>',
+        `📊 <b>${ui.BRAND} stats</b>`,
         '',
         `👥 users <b>${s.users}</b>  <i>(${s.active24} active 24h)</i>`,
         `📬 live addresses <b>${s.inboxes}</b>  ·  generated <b>${s.generated}</b>`,
@@ -714,39 +763,48 @@ export function createBot() {
     await ctx.api.editMessageText(ctx.chat.id, status.message_id, `📣 Delivered to ${ok}/${ids.length}`);
   });
 
-  // inline buttons exist only on push notifications
+  // inline buttons
   bot.on('callback_query:data', async (ctx) => {
-    ctx.answerCallbackQuery().catch(() => {});
     const data = ctx.callbackQuery.data;
+    const fn = resolveToken(ctx.from.id, data);
+    if (fn) return fn(ctx);
+    // stable callbacks used by push notifications (survive restarts)
     let m;
     if ((m = data.match(/^msg:(\d+):([\w-]+)$/))) {
       const ib = store.getOwnedInbox(ctx.from.id, Number(m[1]));
-      return ib ? S.message(ctx, ib, m[2]) : S.problem(ctx, 'gone');
+      return ib ? S.message(ctx, ib, m[2], { fresh: true }) : S.problem(ctx, 'gone');
     }
-    if ((m = data.match(/^inb:(\d+)/))) return S.inbox(ctx, Number(m[1]));
+    if ((m = data.match(/^inb:(\d+)/))) return S.inbox(ctx, Number(m[1]), { fresh: true });
     if (data === 'nr') return S.create(ctx, {});
-    return S.home(ctx); // buttons from older versions land on the new home screen
+    toast(ctx, 'This menu has expired, here’s a fresh one');
+    return S.home(ctx, { fresh: true });
   });
 
-  // keyboard taps & typed input
+  // menu taps & typed input
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
     ctx.deleteMessage().catch(() => {}); // the panel reflects the input; keep the chat clean
+    const menu = menuAction(text);
+    if (menu) {
+      clearInput(ctx.from.id);
+      return menu(ctx);
+    }
     const sc = screenOf(ctx.from.id);
-    const fn = sc?.on.get(text) ?? globalMatch(text);
-    if (fn) return fn(ctx);
-    if (sc?.input) return sc.input(ctx, text);
-    return S.home(ctx);
+    if (sc?.input) {
+      ctx.editPanel = true;
+      return sc.input(ctx, text);
+    }
+    return S.home(ctx, { fresh: true });
   });
 
   bot.on(['message:document', 'message:photo'], (ctx) => {
     const sc = screenOf(ctx.from.id);
-    return sc?.file ? sc.file(ctx) : S.home(ctx);
+    return sc?.file ? sc.file(ctx) : S.home(ctx, { fresh: true });
   });
 
   bot.catch((err) => {
     console.error(`[bot] update ${err.ctx?.update?.update_id}:`, err.error);
-    err.ctx?.reply?.('⚠️ Something went wrong. Tap 🏠 Menu and try again.').catch(() => {});
+    err.ctx?.toast?.('Something went wrong. Try again.', true);
   });
 
   return bot;
@@ -761,5 +819,5 @@ export const COMMANDS = [
   { command: 'profile', description: 'Your profile & stats' },
   { command: 'addresses', description: 'Switch or delete addresses' },
   { command: 'settings', description: 'Notifications & default timer' },
-  { command: 'help', description: 'How Crevio works' },
+  { command: 'help', description: 'How Crevio Mail Bot works' },
 ];
