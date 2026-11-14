@@ -1,0 +1,23 @@
+{
+  "name": "crevio-temp-mail",
+  "version": "1.0.0",
+  "description": "Crevio — a Telegram temp mail bot with a hand-crafted UI, live inbox push, OTP detection and self-destructing addresses.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch --env-file-if-exists=.env src/index.js",
+    "check": "node --check src/index.js && node scripts/smoke.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
+    "@libsql/client": "^0.14.0",
+    "grammy": "^1.30.0",
+    "html-to-text": "^9.0.5"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
